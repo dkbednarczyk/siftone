@@ -1,0 +1,230 @@
+import type { Dirent, Stats } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
+import { extname, join } from "node:path";
+import { errorMessage } from "../util/util";
+
+const SUPPORTED_AUDIO_EXTENSIONS = new Set([".flac", ".mp3"]);
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
+const DEFAULT_MAX_DEPTH = 8;
+const DEFAULT_MAX_ENTRIES = 10_000;
+
+export type CandidateDiscoveryLimits = Readonly<{
+	maxDepth?: number;
+	maxEntries?: number;
+}>;
+
+export type CandidateDiscoveryIssue = Readonly<{
+	path: string;
+	message: string;
+}>;
+
+export type DiscoveredCandidate = Readonly<{
+	root: string;
+	audioPaths: readonly string[];
+	imagePaths: readonly string[];
+}>;
+
+export type CandidateDiscoveryResult = Readonly<{
+	candidates: readonly DiscoveredCandidate[];
+	issues: readonly CandidateDiscoveryIssue[];
+}>;
+
+type DiscoveryBudget = {
+	entries: number;
+	limitReported: boolean;
+};
+
+function comparePaths(first: string, second: string): number {
+	if (first < second) {
+		return -1;
+	}
+
+	if (first > second) {
+		return 1;
+	}
+
+	return 0;
+}
+
+function isSupportedAudioFile(path: string): boolean {
+	return SUPPORTED_AUDIO_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+function isSupportedImageFile(path: string): boolean {
+	return SUPPORTED_IMAGE_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+function resolveLimit(value: number | undefined, fallback: number): number {
+	const limit = value ?? fallback;
+	if (!Number.isSafeInteger(limit) || limit < 1) {
+		throw new RangeError("Discovery limits must be positive safe integers");
+	}
+	return limit;
+}
+
+async function discoverSourcePaths(
+	directory: string,
+	depth: number,
+	limits: Required<CandidateDiscoveryLimits>,
+	budget: DiscoveryBudget,
+	issues: CandidateDiscoveryIssue[],
+): Promise<Readonly<{ audioPaths: string[]; imagePaths: string[] }>> {
+	let entries: Dirent[];
+
+	try {
+		entries = await readdir(directory, { withFileTypes: true });
+	} catch (error) {
+		issues.push({ path: directory, message: errorMessage(error) });
+		return { audioPaths: [], imagePaths: [] };
+	}
+
+	const audioPaths: string[] = [];
+	const imagePaths: string[] = [];
+	for (const entry of entries.sort((first, second) =>
+		comparePaths(first.name, second.name),
+	)) {
+		if (budget.entries >= limits.maxEntries) {
+			if (!budget.limitReported) {
+				issues.push({
+					path: directory,
+					message: `Discovery entry limit (${limits.maxEntries}) reached; remaining paths were not scanned`,
+				});
+
+				budget.limitReported = true;
+			}
+
+			break;
+		}
+
+		budget.entries += 1;
+
+		const path = join(directory, entry.name);
+		let status: Stats;
+
+		try {
+			status = await lstat(path);
+		} catch (error) {
+			issues.push({ path, message: errorMessage(error) });
+			continue;
+		}
+
+		if (status.isSymbolicLink()) {
+			continue;
+		}
+
+		if (status.isDirectory()) {
+			if (depth + 1 >= limits.maxDepth) {
+				issues.push({
+					path,
+					message: `Discovery depth limit (${limits.maxDepth}) reached; not scanning`,
+				});
+				continue;
+			}
+
+			const nested = await discoverSourcePaths(
+				path,
+				depth + 1,
+				limits,
+				budget,
+				issues,
+			);
+
+			audioPaths.push(...nested.audioPaths);
+			imagePaths.push(...nested.imagePaths);
+		} else if (status.isFile()) {
+			if (isSupportedAudioFile(path)) {
+				audioPaths.push(path);
+			} else if (isSupportedImageFile(path)) {
+				imagePaths.push(path);
+			}
+		}
+	}
+
+	return { audioPaths, imagePaths };
+}
+
+/** Discovers one known immediate source container without reading siblings. */
+export async function discoverCandidate(
+	root: string,
+	limits: CandidateDiscoveryLimits = {},
+): Promise<{
+	candidate?: DiscoveredCandidate;
+	issues: CandidateDiscoveryIssue[];
+}> {
+	const resolvedLimits: Required<CandidateDiscoveryLimits> = {
+		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
+		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
+	};
+	const issues: CandidateDiscoveryIssue[] = [];
+	const paths = await discoverSourcePaths(
+		root,
+		0,
+		resolvedLimits,
+		{ entries: 0, limitReported: false },
+		issues,
+	);
+	return paths.audioPaths.length === 0
+		? { issues }
+		: {
+				candidate: {
+					root,
+					audioPaths: paths.audioPaths.sort(comparePaths),
+					imagePaths: paths.imagePaths.sort(comparePaths),
+				},
+				issues,
+			};
+}
+
+/**
+ * Discovers immediate watch-root children that contain supported source audio.
+ * The source tree is only read and symbolic links are never traversed.
+ */
+export async function discoverCandidates(
+	watchRoot: string,
+	limits: CandidateDiscoveryLimits = {},
+): Promise<CandidateDiscoveryResult> {
+	const resolvedLimits: Required<CandidateDiscoveryLimits> = {
+		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
+		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
+	};
+
+	const entries = await readdir(watchRoot, { withFileTypes: true });
+	const candidates: DiscoveredCandidate[] = [];
+	const issues: CandidateDiscoveryIssue[] = [];
+
+	for (const entry of entries.sort((first, second) =>
+		comparePaths(first.name, second.name),
+	)) {
+		const root = join(watchRoot, entry.name);
+		let status: Stats;
+
+		try {
+			status = await lstat(root);
+		} catch (error) {
+			issues.push({ path: root, message: errorMessage(error) });
+			continue;
+		}
+
+		if (!status.isDirectory() || status.isSymbolicLink()) {
+			continue;
+		}
+
+		const sourcePaths = await discoverSourcePaths(
+			root,
+			0,
+			resolvedLimits,
+			{ entries: 0, limitReported: false },
+			issues,
+		);
+
+		if (sourcePaths.audioPaths.length > 0) {
+			candidates.push({
+				root,
+				audioPaths: sourcePaths.audioPaths.sort(comparePaths),
+				imagePaths: sourcePaths.imagePaths.sort(comparePaths),
+			});
+		}
+	}
+
+	return { candidates, issues };
+}

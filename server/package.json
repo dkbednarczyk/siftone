@@ -1,0 +1,28 @@
+{
+	"name": "@siftone/server",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bun --watch src/index.ts --config ./config.toml",
+		"start": "bun run src/index.ts --config ./config.toml",
+		"scan:dry-run": "bun run src/index.ts --config ./config.toml --dry-run",
+		"state:restore": "bun run src/index.ts --config ./config.toml --backup",
+		"test": "bun test",
+		"check": "biome check .",
+		"typecheck": "tsc --project tsconfig.json",
+		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/siftone"
+	},
+	"dependencies": {
+		"chokidar": "^5.0.0",
+		"commander": "^15.0.0",
+		"elysia": "^1.4.29",
+		"music-metadata": "^11.14.0",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.3",
+		"@types/bun": "^1.3.14",
+		"typescript": "^5.7.2"
+	}
+}
