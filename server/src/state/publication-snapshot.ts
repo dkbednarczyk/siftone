@@ -9,7 +9,7 @@ import {
 	isPathBelowRoot,
 	isPathWithinRoot,
 } from "./canonical-path";
-import type { Desired, Entry } from "./reconcile-types";
+import type { Desired, Entry } from "./reconcile/types";
 
 const SOURCE_STAT_CONCURRENCY = 8;
 
@@ -43,8 +43,10 @@ export async function desiredFor(
 	const destination = canonicalAbsolutePath(
 		dirname(input.entries[0]?.destinationPath ?? ""),
 	);
+
 	const destinationPath = destination;
 	const containerPath = canonicalAbsolutePath(input.root);
+
 	if (!isPathBelowRoot(generatedLibraryRoot, destinationPath)) {
 		throw new Error(
 			`Generated destination escapes its root: ${destination}`,
@@ -56,6 +58,7 @@ export async function desiredFor(
 			`Source container escapes its watch root: ${input.root}`,
 		);
 	}
+
 	const entries = await mapBounded(
 		input.entries,
 		async (entry) => {
@@ -69,20 +72,26 @@ export async function desiredFor(
 			const relativeSourcePath = canonicalRelativePath(
 				relative(containerPath, sourcePath).replaceAll("\\", "/"),
 			);
+
 			const destinationName = basename(entry.destinationPath);
 			if (
 				destinationName.includes("/") ||
 				destinationName.includes("\\") ||
 				dirname(entry.destinationPath) !== destination
-			)
+			) {
 				throw new Error(
 					`Unsafe publication entry: ${entry.sourcePath}`,
 				);
+			}
+
 			const status = await lstat(entry.sourcePath, { bigint: true });
-			if (!status.isFile() || status.isSymbolicLink())
+
+			if (!status.isFile() || status.isSymbolicLink()) {
 				throw new Error(
 					`Source is not a real file: ${entry.sourcePath}`,
 				);
+			}
+
 			return {
 				sourcePath,
 				relativeSourcePath,
@@ -94,13 +103,17 @@ export async function desiredFor(
 		},
 		SOURCE_STAT_CONCURRENCY,
 	);
+
 	entries.sort((a, b) => a.destinationName.localeCompare(b.destinationName));
+
 	if (
 		entries.length === 0 ||
 		new Set(entries.map((entry) => entry.destinationName)).size !==
 			entries.length
-	)
+	) {
 		throw new Error(`Invalid publication entries for ${input.root}`);
+	}
+
 	return {
 		input,
 		containerPath,
@@ -120,29 +133,40 @@ export async function entriesMatch(
 			lstat(destination),
 			lstat(dirname(destination)),
 		]);
+
 		if (
 			destinationStatus.isSymbolicLink() ||
 			!destinationStatus.isDirectory() ||
 			artistStatus.isSymbolicLink() ||
 			!artistStatus.isDirectory()
-		)
+		) {
 			return false;
+		}
 	} catch {
 		return false;
 	}
+
 	const expected = new Map(
 		entries.map((entry) => [entry.destinationName, entry.sourcePath]),
 	);
+
 	const output = await readdir(destination, { withFileTypes: true });
-	if (output.length !== expected.size) return false;
+
+	if (output.length !== expected.size) {
+		return false;
+	}
+
 	for (const entry of output) {
 		const target = expected.get(entry.name);
+
 		if (
 			!entry.isSymbolicLink() ||
 			target === undefined ||
 			(await readlink(join(destination, entry.name))) !== target
-		)
+		) {
 			return false;
+		}
 	}
+	
 	return true;
 }

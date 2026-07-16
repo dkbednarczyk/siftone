@@ -62,12 +62,16 @@ function schemaObjects(database: Database): unknown[] {
 
 let expectedSchema: unknown[] | undefined;
 function expectedSchemaObjects(): unknown[] {
-	if (expectedSchema !== undefined) return expectedSchema;
+	if (expectedSchema !== undefined) {
+		return expectedSchema;
+	}
+
 	const template = new Database(":memory:");
 	configure(template);
 	createFreshSchema(template);
 	expectedSchema = schemaObjects(template);
 	template.close();
+
 	return expectedSchema;
 }
 
@@ -76,6 +80,7 @@ export function validateImportStateSchema(database: Database): void {
 	const appId = database
 		.query<{ application_id: number }, []>("PRAGMA application_id")
 		.get();
+
 	if (
 		appId?.application_id !== APPLICATION_ID ||
 		JSON.stringify(schemaObjects(database)) !==
@@ -90,20 +95,30 @@ export function validateImportStateSchema(database: Database): void {
 function openAndValidateSchema(path: string): Database {
 	const existed = existsSync(path);
 	const database = new Database(path, { create: true, strict: true });
+
 	try {
 		configure(database);
-		if (!existed) createFreshSchema(database);
+
+		if (!existed) {
+			createFreshSchema(database);
+		}
+
 		validateImportStateSchema(database);
+
 		const check = database
 			.query<{ quick_check: string }, []>("PRAGMA quick_check")
 			.get();
-		if (check?.quick_check !== "ok")
+
+		if (check?.quick_check !== "ok") {
 			throw new ImportStateError(
 				`SQLite quick_check failed: ${check?.quick_check ?? "no result"}`,
 			);
+		}
+
 		return database;
 	} catch (error) {
 		database.close();
+		
 		throw error;
 	}
 }

@@ -1,5 +1,5 @@
-import type { PublicationInput } from "../publication/publish";
-import type { ImportOperationPhase } from "./import-state";
+import type { PublicationInput } from "../../publication/publish";
+import type { ImportOperationPhase } from "../import-state";
 
 export type Entry = {
 	sourcePath: string;

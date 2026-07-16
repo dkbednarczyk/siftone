@@ -86,9 +86,12 @@ async function discoverSourcePaths(
 
 	const audioPaths: string[] = [];
 	const imagePaths: string[] = [];
-	for (const entry of entries.sort((first, second) =>
-		comparePaths(first.name, second.name),
-	)) {
+
+	const sortedEntries = entries.sort((lhs, rhs) =>
+		comparePaths(lhs.name, rhs.name),
+	);
+
+	for (const entry of sortedEntries) {
 		if (budget.entries >= limits.maxEntries) {
 			if (!budget.limitReported) {
 				issues.push({
@@ -109,21 +112,25 @@ async function discoverSourcePaths(
 		if (entry.isSymbolicLink()) {
 			continue;
 		}
+
 		if (entry.isDirectory()) {
 			kind = "directory";
 		} else if (entry.isFile()) {
 			kind = "file";
 		} else {
 			let status: Stats;
+
 			try {
 				status = await lstat(path);
 			} catch (error) {
 				issues.push({ path, message: errorMessage(error) });
 				continue;
 			}
+
 			if (status.isSymbolicLink()) {
 				continue;
 			}
+
 			if (status.isDirectory()) {
 				kind = "directory";
 			} else if (status.isFile()) {
@@ -177,11 +184,13 @@ export async function discoverCandidate(
 
 	const issues: CandidateDiscoveryIssue[] = [];
 	let status: Stats;
+
 	try {
 		status = await lstat(root);
 	} catch (error) {
 		return { issues: [{ path: root, message: errorMessage(error) }] };
 	}
+
 	if (status.isSymbolicLink() || !status.isDirectory()) {
 		return {
 			issues: [
@@ -227,19 +236,23 @@ export async function discoverCandidates(
 	};
 
 	const entries = await readdir(watchRoot, { withFileTypes: true });
+
 	const roots = entries
 		.toSorted((first, second) => comparePaths(first.name, second.name))
 		.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
 		.map((entry) => join(watchRoot, entry.name));
+
 	const results = await mapBounded(
 		roots,
 		(root) => discoverCandidate(root, resolvedLimits),
 		DISCOVERY_CONCURRENCY,
 	);
+
 	const candidates: DiscoveredCandidate[] = [];
 	const issues: CandidateDiscoveryIssue[] = [];
 	for (const result of results) {
 		issues.push(...result.issues);
+
 		if (result.candidate !== undefined) {
 			candidates.push(result.candidate);
 		}

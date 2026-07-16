@@ -9,10 +9,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PublicationInput } from "../publication/publish";
-import { openImportState } from "./import-state";
-import { desiredFor } from "./publication-snapshot";
-import { reconcileImports, recoverInterruptedOperations } from "./reconcile";
+import type { PublicationInput } from "../../publication/publish";
+import { openImportState } from "../import-state";
+import { desiredFor } from "../publication-snapshot";
+import { reconcileImports, recoverInterruptedOperations } from "./index";
 
 const roots: string[] = [];
 afterEach(async () => {

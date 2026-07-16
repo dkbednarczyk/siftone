@@ -62,6 +62,7 @@ function isMissing(error: unknown): boolean {
 
 function isWithin(parentPath: string, childPath: string): boolean {
 	const difference = relative(parentPath, childPath);
+
 	return (
 		difference !== "" &&
 		difference !== ".." &&
@@ -77,6 +78,7 @@ async function pathStatus(path: string) {
 		if (isMissing(error)) {
 			return undefined;
 		}
+
 		throw error;
 	}
 }
@@ -130,6 +132,7 @@ function createAlbumPlans(
 					`Candidate ${input.root} has an unsafe or duplicate planned destination`,
 				);
 			}
+			
 			destinations.add(entry.destinationPath);
 		}
 
@@ -169,6 +172,7 @@ async function verifyExactAlbum(album: AlbumPlan): Promise<boolean> {
 	const expectedEntries = new Map(
 		album.entries.map((entry) => [basename(entry.destinationPath), entry]),
 	);
+
 	const entries = await readdir(album.path, { withFileTypes: true });
 	if (entries.length !== expectedEntries.size) {
 		return false;
@@ -201,9 +205,11 @@ async function inspectGeneratedLibrary(
 ): Promise<Set<string>> {
 	const albumPaths = new Map(albums.map((album) => [album.path, album]));
 	const expectedArtists = new Map<string, Set<string>>();
+
 	for (const album of albums) {
 		const existing =
 			expectedArtists.get(album.artistPath) ?? new Set<string>();
+
 		existing.add(album.path);
 		expectedArtists.set(album.artistPath, existing);
 	}
@@ -212,6 +218,7 @@ async function inspectGeneratedLibrary(
 	if (rootStatus === undefined) {
 		return new Set<string>();
 	}
+
 	if (rootStatus.isSymbolicLink() || !rootStatus.isDirectory()) {
 		throw new PublicationError(
 			`Generated-library root is not a directory: ${generatedLibraryRoot}`,
@@ -224,6 +231,7 @@ async function inspectGeneratedLibrary(
 	})) {
 		const artistPath = join(generatedLibraryRoot, artistEntry.name);
 		const expectedAlbums = expectedArtists.get(artistPath);
+
 		if (
 			expectedAlbums === undefined ||
 			artistEntry.isSymbolicLink() ||
@@ -239,6 +247,7 @@ async function inspectGeneratedLibrary(
 		})) {
 			const albumPath = join(artistPath, albumEntry.name);
 			const album = albumPaths.get(albumPath);
+
 			if (
 				album === undefined ||
 				albumEntry.isSymbolicLink() ||
@@ -248,11 +257,13 @@ async function inspectGeneratedLibrary(
 					`Unmanaged generated-library entry: ${albumPath}`,
 				);
 			}
+
 			if (!(await verifyExactAlbum(album))) {
 				throw new PublicationError(
 					`Existing generated album does not exactly match its plan: ${albumPath}`,
 				);
 			}
+
 			unchanged.add(albumPath);
 		}
 	}
@@ -265,11 +276,13 @@ async function ensureRealDirectory(
 	description: string,
 ): Promise<Awaited<ReturnType<typeof lstat>>> {
 	const status = await lstat(path);
+
 	if (status.isSymbolicLink() || !status.isDirectory()) {
 		throw new PublicationError(
 			`${description} is not a real directory: ${path}`,
 		);
 	}
+
 	return status;
 }
 
@@ -296,6 +309,7 @@ async function createStagedAlbum(
 		album.entries,
 		async (entry) => {
 			const sourceStatus = await pathStatus(entry.sourcePath);
+
 			if (
 				sourceStatus === undefined ||
 				sourceStatus.isSymbolicLink() ||
@@ -305,6 +319,7 @@ async function createStagedAlbum(
 					`Planned source changed before publication: ${entry.sourcePath}`,
 				);
 			}
+
 			await symlink(
 				entry.sourcePath,
 				join(stagingPath, basename(entry.destinationPath)),
@@ -333,10 +348,12 @@ export async function publishPlans({
 	PublicationHooks): Promise<PublicationResult> {
 	const albums = createAlbumPlans(generatedLibraryRoot, inputs);
 	await verifySourceFiles(albums);
+
 	const unchanged = await inspectGeneratedLibrary(
 		generatedLibraryRoot,
 		albums,
 	);
+
 	const pending = albums.filter((album) => !unchanged.has(album.path));
 	if (pending.length === 0) {
 		return {
@@ -348,10 +365,12 @@ export async function publishPlans({
 
 	await mkdir(generatedLibraryRoot, { recursive: true });
 	await mkdir(stagingRoot, { recursive: true });
+
 	const [generatedStatus, stagingStatus] = await Promise.all([
 		ensureRealDirectory(generatedLibraryRoot, "Generated-library root"),
 		ensureRealDirectory(stagingRoot, "Staging root"),
 	]);
+
 	if (generatedStatus.dev !== stagingStatus.dev) {
 		throw new PublicationError(
 			"Staging and generated-library roots must be on the same filesystem",
@@ -363,7 +382,9 @@ export async function publishPlans({
 		const stagingOperationPath = await mkdtemp(
 			join(stagingRoot, "publication-"),
 		);
+
 		operationPath = stagingOperationPath;
+
 		await mapBounded(
 			pending.map((album, index) => ({ album, index })),
 			({ album, index }) =>
@@ -375,6 +396,7 @@ export async function publishPlans({
 		);
 
 		await beforeCommit?.();
+		
 		// Commits remain serial: partial success is deliberate and hooks observe order.
 		await mapBounded(
 			pending.map((album, index) => ({ album, index })),

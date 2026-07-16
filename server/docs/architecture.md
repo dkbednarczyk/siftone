@@ -149,7 +149,7 @@ atomic. A later failure does not roll back already successful independent albums
 a restart resumes the unfinished operation or records that it needs attention.
 
 `publication/publish.ts` is also a small standalone publisher used by focused
-tests. The normal runtime uses the richer operation journal in `state/reconcile.ts`.
+tests. The normal runtime uses the richer operation journal in `state/reconcile/`.
 Both preserve the same central rule: no replacement or adoption of unknown output.
 
 ## State, ownership, and recovery
@@ -192,9 +192,9 @@ coordination mechanism.
 | `src/publication/prepare.ts` | Scan orchestration, logical-release grouping, collision arbitration | Converts source observations into safe desired publication plans. |
 | `src/publication/publish.ts` | Standalone preflight/stage/publish primitive | Provides a narrow atomic publisher for direct use and tests. |
 | `src/state/import-state.ts`, `schema.ts` | SQLite lifecycle, ownership guard, database format | Contains the durable source of truth for managed output. |
-| `src/state/reconcile.ts` | Desired-vs-recorded comparison, operation journal, resume logic | Coordinates filesystem and database transitions at one safety boundary. |
+| `src/state/reconcile/` | Desired-vs-recorded comparison, operation journal, resume logic | Coordinates filesystem and database transitions at one safety boundary. |
 | `src/state/watcher.ts` | Event coalescing and per-container work serialization | Treats noisy filesystem events as a trigger for re-observation. |
-| `src/state/*-paths.ts`, `publication-snapshot.ts`, `reconcile-types.ts` | Path safety, manifests, and reconciliation vocabulary | Keeps the critical reconciler readable and its invariants reusable. |
+| `src/state/*-paths.ts`, `publication-snapshot.ts`, `reconcile/types.ts` | Path safety, manifests, and reconciliation vocabulary | Keeps the critical reconciler readable and its invariants reusable. |
 | `src/state/backup.ts` | Verified daily snapshot and restore primitive | Keeps backup validity independent of CLI presentation. |
 | `src/**/*.test.ts` | Boundary tests | Keep expected behavior near the owning code. |
 
@@ -208,8 +208,8 @@ coordination mechanism.
 | Change metadata requirements or artwork selection | `src/candidates/validate.ts` | `validate.test.ts`, `server/README.md` |
 | Change generated naming/layout | `src/publication/plan.ts` | `plan.test.ts`, collision arbitration in `prepare.ts` |
 | Change duplicate/collision policy | `src/publication/prepare.ts` | `prepare.test.ts`, incomplete-input safeguards |
-| Change publication filesystem behavior | `src/state/reconcile.ts` and `src/publication/publish.ts` | `publish.test.ts`, `reconcile.test.ts`, recovery cases |
-| Change database data or recovery phases | `src/state/schema.ts`, `import-state.ts`, `reconcile-types.ts` | `reconcile.test.ts`, `import-state.test.ts`, backup compatibility |
+| Change publication filesystem behavior | `src/state/reconcile/` and `src/publication/publish.ts` | `publish.test.ts`, `reconcile/reconcile.test.ts`, recovery cases |
+| Change database data or recovery phases | `src/state/schema.ts`, `import-state.ts`, `reconcile/types.ts` | `reconcile/reconcile.test.ts`, `import-state.test.ts`, backup compatibility |
 | Change watch behavior | `src/state/watcher.ts` | `watcher.test.ts`, degraded-state behavior in `index.ts` |
 | Add an HTTP endpoint | `src/app.ts` | Keep transport thin; use a framework-independent module. |
 

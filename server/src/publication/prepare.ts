@@ -6,8 +6,8 @@ import {
 	discoverCandidates,
 } from "../candidates/discover";
 import {
-	type CandidateValidationIssue,
-	type CandidateValidationWarning,
+	type ValidationIssue,
+	type ValidationWarning,
 	validateCandidate,
 } from "../candidates/validate";
 import {
@@ -30,7 +30,7 @@ export type PreparedCandidate =
 	| Readonly<{
 			root: string;
 			status: "invalid";
-			issues: readonly CandidateValidationIssue[];
+			issues: readonly ValidationIssue[];
 	  }>
 	| Readonly<{
 			root: string;
@@ -46,7 +46,7 @@ export type PreparedCandidate =
 			root: string;
 			status: "planned";
 			entries: readonly PlannedSymlink[];
-			warnings?: readonly CandidateValidationWarning[];
+			warnings?: readonly ValidationWarning[];
 	  }>;
 
 export type PreparedPublication = Readonly<{
@@ -204,6 +204,7 @@ export function arbitratePublicationContenders(
 	for (const [destination, group] of byDestination) {
 		if (group.length === 1) {
 			plans.push(group[0]);
+
 			continue;
 		}
 
@@ -221,6 +222,7 @@ export function arbitratePublicationContenders(
 		) {
 			plans.push(flac[0]);
 			suppressed.push(...mp3);
+
 			continue;
 		}
 
@@ -259,14 +261,17 @@ async function splitTagGroups(
 	);
 	for (const { path, result } of reads) {
 		tags.set(path, result);
+
 		if (!result.ok) {
 			groups.push([path]);
+
 			continue;
 		}
 
 		const album = result.tags.album?.trim() ?? "";
 		const artist =
 			result.tags.albumArtist?.trim() || result.tags.artist?.trim() || "";
+
 		if (album === "" || artist === "") {
 			groups.push([path]);
 			continue;
@@ -276,9 +281,11 @@ async function splitTagGroups(
 		const paths = albums.get(album);
 		if (paths === undefined) {
 			const newPaths = [path];
+
 			albums.set(album, newPaths);
 			groupedPaths.set(artist, albums);
 			groups.push(newPaths);
+
 			continue;
 		}
 
@@ -306,15 +313,19 @@ async function prepareContainer(
 	const candidates: PreparedCandidate[] = [];
 	const contenders: PublicationContender[] = [];
 	let incomplete = false;
+
 	for (const { candidate, reader } of await splitTagGroups(container)) {
 		const validation = await validateCandidate(candidate, reader);
+
 		if (!validation.valid) {
 			incomplete = true;
+
 			candidates.push({
 				root: candidate.root,
 				status: "invalid",
 				issues: validation.issues,
 			});
+
 			continue;
 		}
 
@@ -322,13 +333,16 @@ async function prepareContainer(
 			validation.candidate,
 			generatedLibraryRoot,
 		);
+
 		if (!publication.valid) {
 			incomplete = true;
+
 			candidates.push({
 				root: candidate.root,
 				status: "unplannable",
 				issues: publication.issues,
 			});
+
 			continue;
 		}
 
@@ -342,7 +356,9 @@ async function prepareContainer(
 			albumTitle: validation.candidate.album,
 			entries: publication.entries,
 		};
+
 		contenders.push(contender);
+
 		candidates.push({
 			root: candidate.root,
 			status: "planned",
@@ -392,9 +408,11 @@ export async function preparePublication(
 		(container) => prepareContainer(container, generatedLibraryRoot),
 		PREPARATION_CONCURRENCY,
 	);
+
 	for (const [index, prepared] of preparedContainers.entries()) {
 		candidates.push(...prepared.candidates);
 		contenders.push(...prepared.contenders);
+
 		if (prepared.incomplete) {
 			incompleteContainers.add(discovery.candidates[index].root);
 		}
@@ -490,6 +508,7 @@ export async function prepareSourceContainer(
 		discovery.candidate,
 		generatedLibraryRoot,
 	);
+	
 	const arbitration = arbitratePublicationContenders(prepared.contenders);
 
 	return {

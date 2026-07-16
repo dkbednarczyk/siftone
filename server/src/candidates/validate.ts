@@ -3,7 +3,7 @@ import type { AudioTagReader, AudioTags } from "../metadata/tags";
 import { errorMessage } from "../util/util";
 import type { DiscoveredCandidate } from "./discover";
 
-export type CandidateValidationIssueCode =
+export type IssueCode =
 	| "TAG_READ_ERROR"
 	| "MISSING_TITLE"
 	| "MISSING_ARTIST"
@@ -16,13 +16,13 @@ export type CandidateValidationIssueCode =
 	| "MISSING_ALBUM_ARTIST"
 	| "DUPLICATE_DISC_TRACK";
 
-export type CandidateValidationIssue = Readonly<{
-	code: CandidateValidationIssueCode;
+export type ValidationIssue = Readonly<{
+	code: IssueCode;
 	message: string;
 	path?: string;
 }>;
 
-export type CandidateValidationWarning = Readonly<{
+export type ValidationWarning = Readonly<{
 	code: "MULTIPLE_ARTWORK_CANDIDATES";
 	message: string;
 	selectedPath: string;
@@ -45,20 +45,26 @@ export type ValidatedCandidate = Readonly<{
 	artworkPath?: string;
 }>;
 
-export type CandidateValidationResult =
+export type ValidationResult =
 	| Readonly<{
 			valid: true;
 			candidate: ValidatedCandidate;
-			warnings?: readonly CandidateValidationWarning[];
+			warnings?: readonly ValidationWarning[];
 	  }>
 	| Readonly<{
 			valid: false;
 			root: string;
-			issues: readonly CandidateValidationIssue[];
+			issues: readonly ValidationIssue[];
 	  }>;
+
+type ArtworkSelection = Readonly<{
+	path?: string;
+	warning?: ValidationWarning;
+}>;
 
 function requiredText(value: string | undefined): string | undefined {
 	const text = value?.trim();
+
 	return text === "" ? undefined : text;
 }
 
@@ -67,10 +73,10 @@ function isPositiveInteger(value: number | undefined): value is number {
 }
 
 function issue(
-	code: CandidateValidationIssueCode,
+	code: IssueCode,
 	message: string,
 	path?: string,
-): CandidateValidationIssue {
+): ValidationIssue {
 	return { code, message, path };
 }
 
@@ -81,11 +87,6 @@ function normalizeArtworkName(value: string): string {
 		.replace(/[^\p{L}\p{N}]+/gu, "") // Remove everything except Unicode letters/numbers
 		.toLowerCase();
 }
-
-type ArtworkSelection = Readonly<{
-	path?: string;
-	warning?: CandidateValidationWarning;
-}>;
 
 function compareArtworkPaths(
 	root: string,
@@ -185,11 +186,13 @@ function selectArtworkPath(
 export async function validateCandidate(
 	candidate: DiscoveredCandidate,
 	readTags: AudioTagReader,
-): Promise<CandidateValidationResult> {
-	const issues: CandidateValidationIssue[] = [];
+): Promise<ValidationResult> {
+	const issues: ValidationIssue[] = [];
 	const tracks: ValidatedTrack[] = [];
+
 	let expectedAlbum: string | undefined;
 	let expectedAlbumArtist: string | undefined;
+
 	const artists = new Set<string>();
 	const discTracks = new Set<string>();
 
@@ -206,7 +209,7 @@ export async function validateCandidate(
 		const artist = requiredText(tags.artist);
 		const trackAlbum = requiredText(tags.album);
 		const trackAlbumArtist = requiredText(tags.albumArtist);
-		const fileIssues: CandidateValidationIssue[] = [];
+		const fileIssues: ValidationIssue[] = [];
 
 		if (title === undefined) {
 			fileIssues.push(issue("MISSING_TITLE", "TITLE is required", path));

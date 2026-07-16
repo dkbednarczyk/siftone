@@ -14,8 +14,10 @@ export async function isMissing(path: string): Promise<boolean> {
 			error !== null &&
 			"code" in error &&
 			error.code === "ENOENT"
-		)
+		) {
 			return true;
+		}
+
 		throw error;
 	}
 }
@@ -26,19 +28,23 @@ export async function ensurePublicationRoots(
 ): Promise<void> {
 	for (const root of [generatedLibraryRoot, stagingRoot]) {
 		const status = await lstat(root);
-		if (!status.isDirectory() || status.isSymbolicLink())
+
+		if (!status.isDirectory() || status.isSymbolicLink()) {
 			throw new InvalidOperationState(
 				`Managed root must be a real directory: ${root}`,
 			);
+		}
 	}
 	const [generated, staging] = await Promise.all([
 		stat(generatedLibraryRoot),
 		stat(stagingRoot),
 	]);
-	if (generated.dev !== staging.dev)
+
+	if (generated.dev !== staging.dev) {
 		throw new InvalidOperationState(
 			"Staging and generated roots must share a filesystem",
 		);
+	}
 }
 
 export async function ensureDestinationParent(
@@ -47,19 +53,24 @@ export async function ensureDestinationParent(
 ): Promise<void> {
 	const parent = dirname(destination);
 	const relativeParent = relative(generatedLibraryRoot, parent);
+
 	if (
 		relativeParent !== "" &&
 		(relativeParent.startsWith("..") || isAbsolute(relativeParent))
-	)
+	) {
 		throw new InvalidOperationState(
 			"Destination escapes generated-library root",
 		);
+	}
+
 	await mkdir(parent, { recursive: true });
 	const status = await lstat(parent);
-	if (!status.isDirectory() || status.isSymbolicLink())
+
+	if (!status.isDirectory() || status.isSymbolicLink()) {
 		throw new InvalidOperationState(
 			`Destination parent is unsafe: ${parent}`,
 		);
+	}
 }
 
 export function operationPaths(
@@ -71,6 +82,7 @@ export function operationPaths(
 ) {
 	const destination = canonicalAbsolutePath(destinationPath);
 	const staging = canonicalAbsolutePath(stagingPath);
+	
 	if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
 		throw new InvalidOperationState(
 			"Destination escapes generated-library root",

@@ -7,6 +7,7 @@ export type SourceWatchEvent =
 	| "unlink"
 	| "addDir"
 	| "unlinkDir";
+
 export type WatchDriver = Readonly<{
 	on(
 		event: SourceWatchEvent | "error" | "ready",
@@ -14,6 +15,7 @@ export type WatchDriver = Readonly<{
 	): unknown;
 	close(): Promise<void>;
 }>;
+
 type ContainerWork = {
 	dirty: boolean;
 	running: boolean;
@@ -31,29 +33,48 @@ export class SourceWatchCoordinator {
 	) {}
 	event(path: string): void {
 		const inside = relative(this.watchRoot, path);
-		if (inside === "" || inside.startsWith(`..${sep}`) || inside === "..")
+
+		if (inside === "" || inside.startsWith(`..${sep}`) || inside === "..") {
 			return;
+		}
+
 		const [container] = inside.split(sep);
-		if (container === undefined || container === "") return;
+		if (container === undefined || container === "") {
+			return;
+		}
+
 		const work = this.#work.get(container) ?? {
 			dirty: false,
 			running: false,
 		};
+
 		this.#work.set(container, work);
 		work.dirty = true;
-		if (!work.running) this.#schedule(container, work);
+
+		if (!work.running) {
+			this.#schedule(container, work);
+		}
 	}
+
 	#schedule(container: string, work: ContainerWork): void {
-		if (work.timer !== undefined) clearTimeout(work.timer);
+		if (work.timer !== undefined) {
+			clearTimeout(work.timer);
+		}
+
 		work.timer = setTimeout(() => {
 			work.timer = undefined;
 			void this.#run(container, work);
 		}, this.quietMs);
 	}
+
 	async #run(container: string, work: ContainerWork): Promise<void> {
-		if (work.running || !work.dirty) return;
+		if (work.running || !work.dirty) {
+			return;
+		}
+
 		work.running = true;
 		work.dirty = false;
+
 		try {
 			await this.onContainer(container);
 		} catch (error) {
@@ -62,8 +83,12 @@ export class SourceWatchCoordinator {
 			);
 		} finally {
 			work.running = false;
-			if (work.dirty) this.#schedule(container, work);
-			else this.#work.delete(container);
+
+			if (work.dirty) {
+				this.#schedule(container, work);
+			} else {
+				this.#work.delete(container);
+			}
 		}
 	}
 	loss(error: Error): void {
@@ -71,17 +96,22 @@ export class SourceWatchCoordinator {
 	}
 	async flush(): Promise<void> {
 		while (this.#work.size > 0) {
-			for (const [container, work] of this.#work)
-				if (!work.running && work.timer === undefined && work.dirty)
+			for (const [container, work] of this.#work) {
+				if (!work.running && work.timer === undefined && work.dirty) {
 					void this.#run(container, work);
+				}
+			}
+
 			await new Promise((resolve) =>
 				setTimeout(resolve, Math.max(1, this.quietMs)),
 			);
 		}
 	}
 	async close(): Promise<void> {
-		for (const work of this.#work.values())
+		for (const work of this.#work.values()) {
 			if (work.timer !== undefined) clearTimeout(work.timer);
+		}
+		
 		this.#work.clear();
 	}
 }
