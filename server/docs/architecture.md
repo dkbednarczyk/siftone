@@ -1,12 +1,5 @@
 # Server architecture
 
-> **Purpose:** help a new engineer understand where work belongs, why the server is
-> structured this way, and how to change it safely. This is an architectural map,
-> not an API or configuration reference. See [`../README.md`](../README.md) for
-> setup and configuration, and [`../GONIC.md`](../GONIC.md) for Subsonic testing.
-
-## Read this first
-
 Siftone is a Linux/POSIX daemon that turns immutable source releases into a
 Subsonic-friendly generated music library. It reads tags from FLAC and MP3 files,
 then publishes a separate tree of symlinks. The source tree is never changed.
@@ -161,9 +154,9 @@ Both preserve the same central rule: no replacement or adoption of unknown outpu
 
 ## State, ownership, and recovery
 
-`state/import-state.ts` opens exactly one destructive SQLite v2 database,
-`library-state-v2.sqlite`. It configures SQLite for durable local state and
-rejects a non-empty generated library when no matching v2 state exists. This is a
+`state/import-state.ts` opens exactly one destructive SQLite database,
+`library-state.sqlite`. It configures SQLite for durable local state and rejects
+a non-empty generated library when no matching state exists. This is a
 safety boundary, not a convenience limitation.
 
 The schema in `state/schema.ts` records:
@@ -246,7 +239,7 @@ Implemented today: configuration validation, full and targeted scans, tag-based
 planning, SQLite ownership/state, crash recovery, daily backups, watcher-triggered
 reconciliation, atomic symlink publication, dry runs, restore, and a health route.
 
-Not yet implemented: the management REST API, authenticated SSE, desktop/CLI
+Not yet implemented: the management REST API, authenticated SSE, CLI
 management flows, review resolution UI/API, most artwork cache/remote-artwork
 work, and the broader policy described as planned in `server/README.md`.
 

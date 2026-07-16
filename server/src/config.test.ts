@@ -3,16 +3,18 @@ import {
 	lstat,
 	mkdir,
 	mkdtemp,
+	realpath,
 	rm,
 	symlink,
 	writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadServerConfig, resolveConfigPath } from "./config";
 
 const temporaryDirectories: string[] = [];
 const defaultRootParent = join(
-	"/tmp",
+	tmpdir(),
 	`siftone-config-default-roots-${process.pid}`,
 );
 const defaultWatchRoot = join(defaultRootParent, "source");
@@ -20,7 +22,9 @@ const defaultGeneratedLibraryRoot = join(defaultRootParent, "generated");
 const defaultHomeDirectory = join(defaultRootParent, "home");
 
 async function makeTemporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp("/tmp/siftone-config-");
+	const directory = await realpath(
+		await mkdtemp(join(tmpdir(), "siftone-config-")),
+	);
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -62,7 +66,9 @@ afterEach(async () => {
 	await Promise.all([
 		...temporaryDirectories
 			.splice(0)
-			.map((directory) => rm(directory, { force: true, recursive: true })),
+			.map((directory) =>
+				rm(directory, { force: true, recursive: true }),
+			),
 		rm(defaultRootParent, { force: true, recursive: true }),
 	]);
 });
@@ -101,19 +107,27 @@ describe("server configuration", () => {
 		const configDirectory = await makeTemporaryDirectory();
 		const configPath = await writeConfig(configDirectory);
 
-		await expect(
-			loadServerConfig({
-				configPath,
-				executablePath: join(executableDirectory, "siftone"),
-				homeDirectory: defaultHomeDirectory,
-			}),
-		).resolves.toMatchObject({
+		const config = await loadServerConfig({
+			configPath,
+			executablePath: join(executableDirectory, "siftone"),
+			homeDirectory: defaultHomeDirectory,
+		});
+
+		expect(config).toMatchObject({
 			port: 3000,
 			paths: {
-				cacheRoot: join(defaultHomeDirectory, ".siftone", "cache"),
-				stagingRoot: join(defaultRootParent, ".siftone-staging"),
-				stateRoot: join(defaultHomeDirectory, ".siftone", "state"),
-				backupRoot: join(defaultHomeDirectory, ".siftone", "backups"),
+				cacheRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "cache"),
+				),
+				stagingRoot: await realpath(
+					join(defaultRootParent, ".siftone-staging"),
+				),
+				stateRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "state"),
+				),
+				backupRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "backups"),
+				),
 			},
 		});
 	});
@@ -134,8 +148,14 @@ describe("server configuration", () => {
 			}),
 		);
 
-		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
-			paths: { cacheRoot, stagingRoot, stateRoot, backupRoot },
+		const config = await loadExplicitConfig(configPath);
+		expect(config).toMatchObject({
+			paths: {
+				cacheRoot: await realpath(cacheRoot),
+				stagingRoot: await realpath(stagingRoot),
+				stateRoot: await realpath(stateRoot),
+				backupRoot: await realpath(backupRoot),
+			},
 		});
 	});
 
@@ -251,7 +271,9 @@ describe("server configuration", () => {
 
 		const nestedPath = await writeConfig(
 			directory,
-			tomlPaths({ generated_library_root: join(defaultWatchRoot, "library") }),
+			tomlPaths({
+				generated_library_root: join(defaultWatchRoot, "library"),
+			}),
 		);
 		await expect(loadExplicitConfig(nestedPath)).rejects.toThrow(
 			"must not overlap",
@@ -274,8 +296,12 @@ describe("server configuration", () => {
 			}),
 		);
 
-		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
-			paths: { watchRoot, generatedLibraryRoot },
+		const config = await loadExplicitConfig(configPath);
+		expect(config).toMatchObject({
+			paths: {
+				watchRoot: await realpath(watchRoot),
+				generatedLibraryRoot: await realpath(generatedLibraryRoot),
+			},
 		});
 	});
 
@@ -323,8 +349,9 @@ describe("server configuration", () => {
 			tomlPaths({ watch_root: symlinkRoot }),
 		);
 
-		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
-			paths: { watchRoot: realRoot },
+		const config = await loadExplicitConfig(configPath);
+		expect(config).toMatchObject({
+			paths: { watchRoot: await realpath(realRoot) },
 		});
 	});
 
@@ -350,16 +377,29 @@ describe("server configuration", () => {
 		const generatedLibraryRoot = join(generatedAlias, "library");
 		const configPath = await writeConfig(
 			directory,
-			tomlPaths({ generated_library_root: generatedLibraryRoot }),
+			tomlPaths({
+				generated_library_root: generatedLibraryRoot,
+			}),
 		);
 
-		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+		const config = await loadExplicitConfig(configPath);
+		expect(config).toMatchObject({
 			paths: {
-				generatedLibraryRoot: join(generatedTarget, "library"),
-				cacheRoot: join(defaultHomeDirectory, ".siftone", "cache"),
-				stagingRoot: join(generatedTarget, ".siftone-staging"),
-				stateRoot: join(defaultHomeDirectory, ".siftone", "state"),
-				backupRoot: join(defaultHomeDirectory, ".siftone", "backups"),
+				generatedLibraryRoot: await realpath(
+					join(generatedTarget, "library"),
+				),
+				cacheRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "cache"),
+				),
+				stagingRoot: await realpath(
+					join(generatedTarget, ".siftone-staging"),
+				),
+				stateRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "state"),
+				),
+				backupRoot: await realpath(
+					join(defaultHomeDirectory, ".siftone", "backups"),
+				),
 			},
 		});
 	});

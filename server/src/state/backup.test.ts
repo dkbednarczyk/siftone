@@ -22,7 +22,9 @@ afterEach(async () => {
 	await Promise.all(
 		directories
 			.splice(0)
-			.map((directory) => rm(directory, { recursive: true, force: true })),
+			.map((directory) =>
+				rm(directory, { recursive: true, force: true }),
+			),
 	);
 });
 
@@ -41,18 +43,18 @@ describe("SQLite library-state backups", () => {
 			);
 		}
 		expect((await readdir(paths.backupRoot)).toSorted()).toEqual([
-			"library-state-v2-2026-01-02.sqlite",
-			"library-state-v2-2026-01-03.sqlite",
-			"library-state-v2-2026-01-04.sqlite",
-			"library-state-v2-2026-01-05.sqlite",
-			"library-state-v2-2026-01-06.sqlite",
-			"library-state-v2-2026-01-07.sqlite",
-			"library-state-v2-2026-01-08.sqlite",
+			"library-state-2026-01-02.sqlite",
+			"library-state-2026-01-03.sqlite",
+			"library-state-2026-01-04.sqlite",
+			"library-state-2026-01-05.sqlite",
+			"library-state-2026-01-06.sqlite",
+			"library-state-2026-01-07.sqlite",
+			"library-state-2026-01-08.sqlite",
 		]);
 		state.close();
 	});
 
-	test("restores only a compatible v2 snapshot", async () => {
+	test("restores only a compatible snapshot", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
 			stateRoot: paths.stateRoot,
@@ -72,8 +74,11 @@ describe("SQLite library-state backups", () => {
 		const database = new Database(databasePath);
 		database.run("DELETE FROM source_containers");
 		database.close();
-		await restoreBackup({ backupPath: backupPath as string, databasePath });
-		const restored = new Database(databasePath, { readonly: true });
+		await restoreBackup({
+			backupPath: backupPath as string,
+			databasePath,
+		});
+		const restored = new Database(databasePath);
 		expect(
 			restored
 				.query<{ count: number }, []>(

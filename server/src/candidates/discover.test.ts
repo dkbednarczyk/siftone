@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverCandidates } from "./discover";
+import { discoverCandidate, discoverCandidates } from "./discover";
 
 const temporaryDirectories: string[] = [];
 
@@ -17,7 +17,9 @@ afterEach(async () => {
 	await Promise.all(
 		temporaryDirectories
 			.splice(0)
-			.map((directory) => rm(directory, { recursive: true, force: true })),
+			.map((directory) =>
+				rm(directory, { recursive: true, force: true }),
+			),
 	);
 });
 
@@ -54,6 +56,23 @@ describe("candidate discovery", () => {
 				},
 			],
 			issues: [],
+		});
+	});
+
+	test("rejects a symbolic-link root for targeted discovery", async () => {
+		const watchRoot = await makeWatchRoot();
+		const source = join(watchRoot, "Source");
+		const symlinkRoot = join(watchRoot, "Linked");
+		await writeSourceFile(join(source, "01.flac"));
+		await symlink(source, symlinkRoot);
+
+		await expect(discoverCandidate(symlinkRoot)).resolves.toEqual({
+			issues: [
+				{
+					path: symlinkRoot,
+					message: "Source candidate root is not a real directory",
+				},
+			],
 		});
 	});
 
@@ -94,7 +113,10 @@ describe("candidate discovery", () => {
 		expect(result.candidates).toEqual([
 			{
 				root: album,
-				audioPaths: [join(album, "01 Song.FLAC"), join(album, "02 Song.Mp3")],
+				audioPaths: [
+					join(album, "01 Song.FLAC"),
+					join(album, "02 Song.Mp3"),
+				],
 				imagePaths: [join(album, "cover.jpg")],
 			},
 		]);
@@ -130,9 +152,13 @@ describe("candidate discovery", () => {
 		const beyondAlbum = join(watchRoot, "Beyond");
 		const boundaryTrack = join(boundaryAlbum, "Disc", "01 Song.flac");
 		await writeSourceFile(boundaryTrack);
-		await writeSourceFile(join(beyondAlbum, "Disc", "Bonus", "01 Song.flac"));
+		await writeSourceFile(
+			join(beyondAlbum, "Disc", "Bonus", "01 Song.flac"),
+		);
 
-		const result = await discoverCandidates(watchRoot, { maxDepth: 2 });
+		const result = await discoverCandidates(watchRoot, {
+			maxDepth: 2,
+		});
 
 		expect(result.candidates).toEqual([
 			{
@@ -156,7 +182,9 @@ describe("candidate discovery", () => {
 		await writeSourceFile(firstTrack);
 		await writeSourceFile(join(album, "02 Second.flac"));
 
-		const result = await discoverCandidates(watchRoot, { maxEntries: 1 });
+		const result = await discoverCandidates(watchRoot, {
+			maxEntries: 1,
+		});
 
 		expect(result.candidates).toEqual([
 			{
@@ -180,7 +208,10 @@ describe("candidate discovery", () => {
 		const external = join(watchRoot, "External");
 		await writeSourceFile(join(album, "01 Song.flac"));
 		await writeSourceFile(join(external, "02 Linked.flac"));
-		await symlink(join(external, "02 Linked.flac"), join(album, "linked.mp3"));
+		await symlink(
+			join(external, "02 Linked.flac"),
+			join(album, "linked.mp3"),
+		);
 		await symlink(external, join(album, "linked-directory"));
 		await symlink(external, linkedAlbum);
 

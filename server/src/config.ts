@@ -81,7 +81,9 @@ export function resolveConfigPath({
 
 function validateAbsolutePath(value: string, field: PathField[0]): string {
 	if (value.trim() === "") {
-		throw new ConfigError(`paths.${field} must be a non-empty absolute path`);
+		throw new ConfigError(
+			`paths.${field} must be a non-empty absolute path`,
+		);
 	}
 
 	if (!isAbsolute(value)) {
@@ -145,7 +147,8 @@ async function createAndResolveDirectory(
 function pathsOverlap(firstPath: string, secondPath: string): boolean {
 	const difference = relative(firstPath, secondPath);
 	return (
-		difference === "" || (difference !== ".." && !difference.startsWith("../"))
+		difference === "" ||
+		(difference !== ".." && !difference.startsWith("../"))
 	);
 }
 
@@ -189,7 +192,10 @@ async function parsePaths(
 		),
 		stagingRoot: validateAbsolutePath(
 			config.paths.staging_root ??
-				join(dirname(config.paths.generated_library_root), ".siftone-staging"),
+				join(
+					dirname(config.paths.generated_library_root),
+					".siftone-staging",
+				),
 			"staging_root",
 		),
 		stateRoot: validateAbsolutePath(
@@ -277,12 +283,17 @@ export async function loadServerConfig(
 		const issues = result.error.issues
 			.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
 			.join("; ");
-		throw new ConfigError(`Invalid configuration in ${configPath}: ${issues}`);
+		throw new ConfigError(
+			`Invalid configuration in ${configPath}: ${issues}`,
+		);
 	}
 
 	return {
 		configPath,
 		port: parsePort(result.data),
-		paths: await parsePaths(result.data, options.homeDirectory ?? homedir()),
+		paths: await parsePaths(
+			result.data,
+			options.homeDirectory ?? homedir(),
+		),
 	};
 }

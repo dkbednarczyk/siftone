@@ -1,15 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import type { AudioTagReader, AudioTags } from "../metadata/tags";
 import { planPublication } from "../publication/plan";
 import type { DiscoveredCandidate } from "./discover";
-import { type AudioTagReader, validateCandidate } from "./validate";
+import { validateCandidate } from "./validate";
 
 function candidate(...audioPaths: string[]): DiscoveredCandidate {
 	return { root: "/source/Album", audioPaths, imagePaths: [] };
 }
 
-function tags(
-	overrides: Partial<Awaited<ReturnType<AudioTagReader>>> = {},
-): Awaited<ReturnType<AudioTagReader>> {
+function tags(overrides: Partial<AudioTags> = {}): AudioTags {
 	return {
 		path: "/source/Album/01 Song.flac",
 		title: "Song",
@@ -20,9 +19,7 @@ function tags(
 	};
 }
 
-function reader(
-	values: Record<string, Awaited<ReturnType<AudioTagReader>>>,
-): AudioTagReader {
+function reader(values: Record<string, AudioTags>): AudioTagReader {
 	return async (path) => {
 		const value = values[path];
 		if (value === undefined) {
@@ -41,7 +38,11 @@ describe("candidate metadata validation", () => {
 			candidate(first, second),
 			reader({
 				[first]: tags({ path: first }),
-				[second]: tags({ path: second, title: "Second", trackNumber: 2 }),
+				[second]: tags({
+					path: second,
+					title: "Second",
+					trackNumber: 2,
+				}),
 			}),
 		);
 
@@ -76,7 +77,10 @@ describe("candidate metadata validation", () => {
 		const result = await validateCandidate(
 			{
 				...candidate(first),
-				imagePaths: ["/source/Album/Album.png", "/source/Album/cover.JPEG"],
+				imagePaths: [
+					"/source/Album/Album.png",
+					"/source/Album/cover.JPEG",
+				],
 			},
 			reader({ [first]: tags({ path: first }) }),
 		);
@@ -92,7 +96,10 @@ describe("candidate metadata validation", () => {
 		const result = await validateCandidate(
 			{
 				...candidate(first),
-				imagePaths: ["/source/Album/cover.png", "/source/Album/cover.jpg"],
+				imagePaths: [
+					"/source/Album/cover.png",
+					"/source/Album/cover.jpg",
+				],
 			},
 			reader({ [first]: tags({ path: first }) }),
 		);
@@ -130,7 +137,9 @@ describe("candidate metadata validation", () => {
 
 		expect(result).toMatchObject({
 			valid: true,
-			candidate: { artworkPath: "/source/Album/Disc 1/cover.jpg" },
+			candidate: {
+				artworkPath: "/source/Album/Disc 1/cover.jpg",
+			},
 			warnings: [
 				{
 					selectedPath: "/source/Album/Disc 1/cover.jpg",
@@ -139,9 +148,11 @@ describe("candidate metadata validation", () => {
 			],
 		});
 		if (result.valid) {
-			expect(planPublication(result.candidate, "/library")).toMatchObject({
-				valid: true,
-			});
+			expect(planPublication(result.candidate, "/library")).toMatchObject(
+				{
+					valid: true,
+				},
+			);
 		}
 	});
 
@@ -157,7 +168,9 @@ describe("candidate metadata validation", () => {
 
 		expect(result).toMatchObject({
 			valid: true,
-			candidate: { artworkPath: "/source/Album/Disc 1/Album.png" },
+			candidate: {
+				artworkPath: "/source/Album/Disc 1/Album.png",
+			},
 		});
 	});
 
@@ -169,30 +182,47 @@ describe("candidate metadata validation", () => {
 			candidate(first, second),
 			reader({
 				[first]: tags({ path: first }),
-				[second]: tags({ path: second, artist: "Guest", trackNumber: 2 }),
+				[second]: tags({
+					path: second,
+					artist: "Guest",
+					trackNumber: 2,
+				}),
 			}),
 		);
 
 		expect(result).toMatchObject({
 			valid: false,
-			issues: [expect.objectContaining({ code: "MISSING_ALBUM_ARTIST" })],
+			issues: [
+				expect.objectContaining({
+					code: "MISSING_ALBUM_ARTIST",
+				}),
+			],
 		});
 	});
 
-	test("reports malformed tags without throwing for the candidate", async () => {
+	test("stops after reporting the first malformed file", async () => {
 		const first = "/source/Album/01 Song.flac";
 		const second = "/source/Album/02 Song.flac";
+		const calls: string[] = [];
+		const readTags = reader({
+			[first]: tags({
+				path: first,
+				title: "",
+				trackNumber: 0,
+			}),
+			[second]: tags({
+				path: second,
+				album: "Another Album",
+				trackNumber: 1,
+			}),
+		});
 
 		const result = await validateCandidate(
 			candidate(first, second),
-			reader({
-				[first]: tags({ path: first, title: "", trackNumber: 0 }),
-				[second]: tags({
-					path: second,
-					album: "Another Album",
-					trackNumber: 1,
-				}),
-			}),
+			async (path) => {
+				calls.push(path);
+				return readTags(path);
+			},
 		);
 
 		expect(result).toEqual({
@@ -209,24 +239,59 @@ describe("candidate metadata validation", () => {
 					message: "TRACKNUMBER must be positive",
 					path: first,
 				},
-				{
-					code: "CONFLICTING_ALBUM",
-					message: "Tracks must share one ALBUM",
-				},
 			],
 		});
+		expect(calls).toEqual([first]);
 	});
 
-	test("rejects duplicate disc and track numbers", async () => {
-		const first = "/source/Album/disc-1/01 Song.flac";
-		const second = "/source/Album/disc-1/01 Duplicate.flac";
+	test("stops after the first tag-read failure", async () => {
+		const first = "/source/Album/01 Song.flac";
+		const second = "/source/Album/02 Song.flac";
+		const calls: string[] = [];
 
 		const result = await validateCandidate(
 			candidate(first, second),
-			reader({
-				[first]: tags({ path: first, discNumber: 1 }),
-				[second]: tags({ path: second, title: "Duplicate", discNumber: 1 }),
+			async (path) => {
+				calls.push(path);
+				throw new Error("Unreadable tags");
+			},
+		);
+
+		expect(result).toEqual({
+			valid: false,
+			root: "/source/Album",
+			issues: [
+				{
+					code: "TAG_READ_ERROR",
+					message: "Unreadable tags",
+					path: first,
+				},
+			],
+		});
+		expect(calls).toEqual([first]);
+	});
+
+	test("stops after a duplicate disc and track number", async () => {
+		const first = "/source/Album/disc-1/01 Song.flac";
+		const second = "/source/Album/disc-1/01 Duplicate.flac";
+		const third = "/source/Album/disc-1/02 Unread.flac";
+		const calls: string[] = [];
+		const readTags = reader({
+			[first]: tags({ path: first, discNumber: 1 }),
+			[second]: tags({
+				path: second,
+				title: "Duplicate",
+				discNumber: 1,
 			}),
+			[third]: tags({ path: third, title: "Unread", trackNumber: 2 }),
+		});
+
+		const result = await validateCandidate(
+			candidate(first, second, third),
+			async (path) => {
+				calls.push(path);
+				return readTags(path);
+			},
 		);
 
 		expect(result).toMatchObject({
@@ -238,5 +303,6 @@ describe("candidate metadata validation", () => {
 				},
 			],
 		});
+		expect(calls).toEqual([first, second]);
 	});
 });

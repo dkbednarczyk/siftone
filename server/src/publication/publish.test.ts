@@ -9,6 +9,7 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	PublicationError,
@@ -20,7 +21,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 async function makeTemporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp("/tmp/siftone-publish-");
+	const directory = await mkdtemp(join(tmpdir(), "siftone-publish-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -39,17 +40,30 @@ async function createInput(
 	const generatedRoot = join(directory, "generated");
 	return {
 		root: sourceRoot,
-		logicalReleaseKey: `artist\u0000${album.toLocaleLowerCase()}`,
+		logicalReleaseKey: JSON.stringify([
+			"artist",
+			album.toLocaleLowerCase(),
+		]),
 		albumArtist: "Artist",
 		albumTitle: album,
 		entries: [
 			{
 				sourcePath: firstSource,
-				destinationPath: join(generatedRoot, "Artist", album, "01 First.flac"),
+				destinationPath: join(
+					generatedRoot,
+					"Artist",
+					album,
+					"01 First.flac",
+				),
 			},
 			{
 				sourcePath: secondSource,
-				destinationPath: join(generatedRoot, "Artist", album, "02 Second.mp3"),
+				destinationPath: join(
+					generatedRoot,
+					"Artist",
+					album,
+					"02 Second.mp3",
+				),
 			},
 		],
 	};
@@ -72,7 +86,9 @@ afterEach(async () => {
 	await Promise.all(
 		temporaryDirectories
 			.splice(0)
-			.map((directory) => rm(directory, { force: true, recursive: true })),
+			.map((directory) =>
+				rm(directory, { force: true, recursive: true }),
+			),
 	);
 });
 
@@ -151,12 +167,12 @@ describe("publication", () => {
 		});
 		await writeFile(conflictingDestination, "unmanaged");
 
-		await expect(publish(directory, [firstInput, secondInput])).rejects.toEqual(
-			expect.any(PublicationError),
-		);
-		await expect(lstat(secondInput.entries[0].destinationPath)).rejects.toThrow(
-			"ENOENT",
-		);
+		await expect(
+			publish(directory, [firstInput, secondInput]),
+		).rejects.toEqual(expect.any(PublicationError));
+		await expect(
+			lstat(secondInput.entries[0].destinationPath),
+		).rejects.toThrow("ENOENT");
 	});
 
 	test("rejects a partial existing album", async () => {
@@ -186,7 +202,9 @@ describe("publication", () => {
 		await expect(
 			publish(directory, [input], {
 				beforeCommit: async () => {
-					await mkdir(albumPath, { recursive: true });
+					await mkdir(albumPath, {
+						recursive: true,
+					});
 				},
 			}),
 		).rejects.toThrow("appeared during publication");
@@ -201,7 +219,10 @@ describe("publication", () => {
 		const externalDirectory = join(directory, "external");
 		await mkdir(join(directory, "generated"), { recursive: true });
 		await mkdir(externalDirectory);
-		await symlink(externalDirectory, join(directory, "generated", "Artist"));
+		await symlink(
+			externalDirectory,
+			join(directory, "generated", "Artist"),
+		);
 
 		await expect(publish(directory, [input])).rejects.toThrow(
 			"Unmanaged generated-library entry",
@@ -226,11 +247,13 @@ describe("publication", () => {
 			}),
 		).rejects.toThrow("simulated commit failure");
 		expect(
-			(await lstat(firstInput.entries[0].destinationPath)).isSymbolicLink(),
+			(
+				await lstat(firstInput.entries[0].destinationPath)
+			).isSymbolicLink(),
 		).toBe(true);
-		await expect(lstat(secondInput.entries[0].destinationPath)).rejects.toThrow(
-			"ENOENT",
-		);
+		await expect(
+			lstat(secondInput.entries[0].destinationPath),
+		).rejects.toThrow("ENOENT");
 		expect(await readdir(join(directory, "staging"))).toEqual([]);
 
 		await expect(
@@ -283,7 +306,10 @@ describe("publication", () => {
 		const directory = await makeTemporaryDirectory();
 		const input = await createInput(directory);
 		await mkdir(join(directory, "generated"), { recursive: true });
-		await writeFile(join(directory, "generated", "unmanaged.txt"), "unmanaged");
+		await writeFile(
+			join(directory, "generated", "unmanaged.txt"),
+			"unmanaged",
+		);
 
 		await expect(publish(directory, [input])).rejects.toThrow(
 			"Unmanaged generated-library entry",

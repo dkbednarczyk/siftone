@@ -16,11 +16,13 @@ import { reconcileImports, recoverInterruptedOperations } from "./reconcile";
 const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(
-		roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+		roots
+			.splice(0)
+			.map((root) => rm(root, { recursive: true, force: true })),
 	);
 });
 async function fixture() {
-	const root = await mkdtemp(join(tmpdir(), "siftone-reconcile-v2-"));
+	const root = await mkdtemp(join(tmpdir(), "siftone-reconcile-"));
 	roots.push(root);
 	const watchRoot = join(root, "watch");
 	const sourceRoot = join(watchRoot, "Album");
@@ -38,7 +40,7 @@ async function fixture() {
 	const destination = join(generated, "Artist", "Album", "01.flac");
 	const input: PublicationInput = {
 		root: sourceRoot,
-		logicalReleaseKey: "artist\0album",
+		logicalReleaseKey: '["artist","album"]',
 		albumArtist: "Artist",
 		albumTitle: "Album",
 		entries: [{ sourcePath: source, destinationPath: destination }],
@@ -55,7 +57,7 @@ async function fixture() {
 	};
 }
 
-describe("v2 reconciliation", () => {
+describe("reconciliation", () => {
 	test("publishes an indexed manifest and treats unchanged fingerprints as no work", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -79,6 +81,9 @@ describe("v2 reconciliation", () => {
 				)
 				.get()?.n,
 		).toBe(1);
+		const changesBeforeUnchangedReconcile = state.database
+			.query<{ changes: number }, []>("SELECT total_changes() AS changes")
+			.get()?.changes;
 		await reconcileImports({
 			state,
 			generatedLibraryRoot: paths.generated,
@@ -89,11 +94,104 @@ describe("v2 reconciliation", () => {
 		});
 		expect(
 			state.database
+				.query<{ changes: number }, []>(
+					"SELECT total_changes() AS changes",
+				)
+				.get()?.changes,
+		).toBe(changesBeforeUnchangedReconcile);
+		expect(
+			state.database
+				.query<{ n: number }, []>("SELECT count(*) n FROM operations")
+				.get()?.n,
+		).toBe(0);
+		state.database.run(
+			"UPDATE source_containers SET availability = 'missing', missing_since_ns = 1",
+		);
+		state.database.run(
+			"UPDATE source_releases SET availability = 'missing', missing_since_ns = 1",
+		);
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: false,
+		});
+		expect(
+			state.database
+				.query<{ availability: string }, []>(
+					"SELECT availability FROM source_containers",
+				)
+				.get()?.availability,
+		).toBe("present");
+		expect(
+			state.database
+				.query<{ availability: string }, []>(
+					"SELECT availability FROM source_releases",
+				)
+				.get()?.availability,
+		).toBe("present");
+		state.close();
+	});
+	test("publishes independent albums under one artist concurrently", async () => {
+		const paths = await fixture();
+		const secondSourceRoot = join(paths.watchRoot, "Second Album");
+		const secondSource = join(secondSourceRoot, "01.flac");
+		const secondDestination = join(
+			paths.generated,
+			"Artist",
+			"Second Album",
+			"01.flac",
+		);
+		await mkdir(secondSourceRoot, { recursive: true });
+		await writeFile(secondSource, "second audio");
+		const secondInput: PublicationInput = {
+			root: secondSourceRoot,
+			logicalReleaseKey: '["artist","second album"]',
+			albumArtist: "Artist",
+			albumTitle: "Second Album",
+			entries: [
+				{
+					sourcePath: secondSource,
+					destinationPath: secondDestination,
+				},
+			],
+		};
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input, secondInput],
+			complete: true,
+		});
+		for (const destination of [paths.destination, secondDestination]) {
+			expect((await lstat(destination)).isSymbolicLink()).toBe(true);
+		}
+		expect(
+			state.database
+				.query<{ n: number }, []>("SELECT count(*) n FROM operations")
+				.get()?.n,
+		).toBe(0);
+		await recoverInterruptedOperations({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+		});
+		expect(
+			state.database
 				.query<{ n: number }, []>("SELECT count(*) n FROM operations")
 				.get()?.n,
 		).toBe(0);
 		state.close();
 	});
+
 	test("recovery resumes a planned operation after a simulated crash", async () => {
 		const paths = await fixture();
 		const state = await openImportState({

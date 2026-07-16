@@ -27,15 +27,19 @@ function compareTracks(first: ValidatedTrack, second: ValidatedTrack): number {
 	if (first.discNumber !== second.discNumber) {
 		return first.discNumber - second.discNumber;
 	}
+
 	if (first.trackNumber !== second.trackNumber) {
 		return first.trackNumber - second.trackNumber;
 	}
+
 	if (first.path < second.path) {
 		return -1;
 	}
+
 	if (first.path > second.path) {
 		return 1;
 	}
+
 	return 0;
 }
 

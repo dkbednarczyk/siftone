@@ -35,7 +35,10 @@ export class SourceWatchCoordinator {
 			return;
 		const [container] = inside.split(sep);
 		if (container === undefined || container === "") return;
-		const work = this.#work.get(container) ?? { dirty: false, running: false };
+		const work = this.#work.get(container) ?? {
+			dirty: false,
+			running: false,
+		};
 		this.#work.set(container, work);
 		work.dirty = true;
 		if (!work.running) this.#schedule(container, work);
@@ -54,7 +57,9 @@ export class SourceWatchCoordinator {
 		try {
 			await this.onContainer(container);
 		} catch (error) {
-			this.onLoss(error instanceof Error ? error : new Error(String(error)));
+			this.onLoss(
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		} finally {
 			work.running = false;
 			if (work.dirty) this.#schedule(container, work);
@@ -128,7 +133,7 @@ export function startSourceWatcher(
 	const ready = new Promise<void>((resolve) => {
 		watcher.on("ready", () => resolve());
 	});
-	
+
 	return {
 		coordinator,
 		ready,

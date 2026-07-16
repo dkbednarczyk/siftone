@@ -1,6 +1,6 @@
 # `@siftone/contracts`
 
-Shared TypeScript contracts for the Siftone server, desktop, and CLI. This package is the single definition of API payloads and SSE event shapes; it contains no platform adapters, UI code, filesystem access, database access, or import business logic.
+Shared TypeScript contracts for the Siftone server and CLI. This package is the single definition of API payloads and SSE event shapes; it contains no platform adapters, UI code, filesystem access, database access, or import business logic.
 
 ## Planned contents
 

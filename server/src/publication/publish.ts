@@ -9,7 +9,12 @@ import {
 	symlink,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { mapBounded } from "../util/util";
 import type { PlannedSymlink } from "./plan";
+
+const SOURCE_VERIFICATION_CONCURRENCY = 32;
+const ALBUM_STAGING_CONCURRENCY = 4;
+const ENTRY_IO_CONCURRENCY = 8;
 
 export type PublicationInput = Readonly<{
 	root: string;
@@ -109,7 +114,9 @@ function createAlbumPlans(
 		}
 
 		if (albums.has(albumPath)) {
-			throw new PublicationError(`Multiple candidates target ${albumPath}`);
+			throw new PublicationError(
+				`Multiple candidates target ${albumPath}`,
+			);
 		}
 
 		for (const entry of input.entries) {
@@ -139,16 +146,23 @@ function createAlbumPlans(
 }
 
 async function verifySourceFiles(albums: readonly AlbumPlan[]): Promise<void> {
-	for (const album of albums) {
-		for (const entry of album.entries) {
+	const entries = albums.flatMap((album) => album.entries);
+	await mapBounded(
+		entries,
+		async (entry) => {
 			const status = await pathStatus(entry.sourcePath);
-			if (status === undefined || status.isSymbolicLink() || !status.isFile()) {
+			if (
+				status === undefined ||
+				status.isSymbolicLink() ||
+				!status.isFile()
+			) {
 				throw new PublicationError(
 					`Planned source is not a real source file: ${entry.sourcePath}`,
 				);
 			}
-		}
-	}
+		},
+		SOURCE_VERIFICATION_CONCURRENCY,
+	);
 }
 
 async function verifyExactAlbum(album: AlbumPlan): Promise<boolean> {
@@ -160,23 +174,25 @@ async function verifyExactAlbum(album: AlbumPlan): Promise<boolean> {
 		return false;
 	}
 
-	for (const entry of entries) {
-		const expected = expectedEntries.get(entry.name);
-		if (expected === undefined) {
-			return false;
-		}
+	const matches = await mapBounded(
+		entries,
+		async (entry) => {
+			const expected = expectedEntries.get(entry.name);
+			if (expected === undefined) {
+				return false;
+			}
 
-		const path = join(album.path, entry.name);
-		const status = await lstat(path);
-		if (
-			!status.isSymbolicLink() ||
-			(await readlink(path)) !== expected.sourcePath
-		) {
-			return false;
-		}
-	}
+			const path = join(album.path, entry.name);
+			const status = await lstat(path);
+			return (
+				status.isSymbolicLink() &&
+				(await readlink(path)) === expected.sourcePath
+			);
+		},
+		ENTRY_IO_CONCURRENCY,
+	);
 
-	return true;
+	return matches.every(Boolean);
 }
 
 async function inspectGeneratedLibrary(
@@ -186,7 +202,8 @@ async function inspectGeneratedLibrary(
 	const albumPaths = new Map(albums.map((album) => [album.path, album]));
 	const expectedArtists = new Map<string, Set<string>>();
 	for (const album of albums) {
-		const existing = expectedArtists.get(album.artistPath) ?? new Set<string>();
+		const existing =
+			expectedArtists.get(album.artistPath) ?? new Set<string>();
 		existing.add(album.path);
 		expectedArtists.set(album.artistPath, existing);
 	}
@@ -275,22 +292,26 @@ async function createStagedAlbum(
 	album: AlbumPlan,
 ): Promise<void> {
 	await mkdir(stagingPath);
-	for (const entry of album.entries) {
-		const sourceStatus = await pathStatus(entry.sourcePath);
-		if (
-			sourceStatus === undefined ||
-			sourceStatus.isSymbolicLink() ||
-			!sourceStatus.isFile()
-		) {
-			throw new PublicationError(
-				`Planned source changed before publication: ${entry.sourcePath}`,
+	await mapBounded(
+		album.entries,
+		async (entry) => {
+			const sourceStatus = await pathStatus(entry.sourcePath);
+			if (
+				sourceStatus === undefined ||
+				sourceStatus.isSymbolicLink() ||
+				!sourceStatus.isFile()
+			) {
+				throw new PublicationError(
+					`Planned source changed before publication: ${entry.sourcePath}`,
+				);
+			}
+			await symlink(
+				entry.sourcePath,
+				join(stagingPath, basename(entry.destinationPath)),
 			);
-		}
-		await symlink(
-			entry.sourcePath,
-			join(stagingPath, basename(entry.destinationPath)),
-		);
-	}
+		},
+		ENTRY_IO_CONCURRENCY,
+	);
 }
 
 /**
@@ -312,7 +333,10 @@ export async function publishPlans({
 	PublicationHooks): Promise<PublicationResult> {
 	const albums = createAlbumPlans(generatedLibraryRoot, inputs);
 	await verifySourceFiles(albums);
-	const unchanged = await inspectGeneratedLibrary(generatedLibraryRoot, albums);
+	const unchanged = await inspectGeneratedLibrary(
+		generatedLibraryRoot,
+		albums,
+	);
 	const pending = albums.filter((album) => !unchanged.has(album.path));
 	if (pending.length === 0) {
 		return {
@@ -336,22 +360,42 @@ export async function publishPlans({
 
 	let operationPath: string | undefined;
 	try {
-		operationPath = await mkdtemp(join(stagingRoot, "publication-"));
-		for (const [index, album] of pending.entries()) {
-			await createStagedAlbum(join(operationPath, String(index)), album);
-		}
+		const stagingOperationPath = await mkdtemp(
+			join(stagingRoot, "publication-"),
+		);
+		operationPath = stagingOperationPath;
+		await mapBounded(
+			pending.map((album, index) => ({ album, index })),
+			({ album, index }) =>
+				createStagedAlbum(
+					join(stagingOperationPath, String(index)),
+					album,
+				),
+			ALBUM_STAGING_CONCURRENCY,
+		);
 
 		await beforeCommit?.();
-		for (const [index, album] of pending.entries()) {
-			await beforePublishAlbum?.(album.path);
-			await mkdir(album.artistPath, { recursive: true });
-			await ensureSafeArtistDirectory(album.artistPath);
-			await ensureDestinationIsMissing(album.path);
-			await rename(join(operationPath, String(index)), album.path);
-		}
+		// Commits remain serial: partial success is deliberate and hooks observe order.
+		await mapBounded(
+			pending.map((album, index) => ({ album, index })),
+			async ({ album, index }) => {
+				await beforePublishAlbum?.(album.path);
+				await mkdir(album.artistPath, { recursive: true });
+				await ensureSafeArtistDirectory(album.artistPath);
+				await ensureDestinationIsMissing(album.path);
+				await rename(
+					join(stagingOperationPath, String(index)),
+					album.path,
+				);
+			},
+			1,
+		);
 	} finally {
 		if (operationPath !== undefined) {
-			await rm(operationPath, { force: true, recursive: true });
+			await rm(operationPath, {
+				force: true,
+				recursive: true,
+			});
 		}
 	}
 

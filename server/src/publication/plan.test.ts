@@ -33,11 +33,13 @@ describe("publication planning", () => {
 			entries: [
 				{
 					sourcePath: "/source/Album/disc-1/02 First.mp3",
-					destinationPath: "/library/Artist Name/Album/01 First Track.mp3",
+					destinationPath:
+						"/library/Artist Name/Album/01 First Track.mp3",
 				},
 				{
 					sourcePath: "/source/Album/disc-2/01 Second.FLAC",
-					destinationPath: "/library/Artist Name/Album/02 Second.flac",
+					destinationPath:
+						"/library/Artist Name/Album/02 Second.flac",
 				},
 			],
 		});

@@ -10,6 +10,8 @@ export type AudioTags = Readonly<{
 	discNumber?: number;
 }>;
 
+export type AudioTagReader = (path: string) => Promise<AudioTags>;
+
 function optionalText(value: string | undefined): string | undefined {
 	const text = value?.trim();
 	return text === "" ? undefined : text;

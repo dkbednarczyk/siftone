@@ -12,22 +12,6 @@
       "name": "@siftone/cli",
       "version": "0.0.0",
     },
-    "desktop": {
-      "name": "@siftone/desktop",
-      "version": "0.0.0",
-      "dependencies": {
-        "electrobun": "1.18.1",
-      },
-      "devDependencies": {
-        "@biomejs/biome": "2.5.3",
-        "@sveltejs/vite-plugin-svelte": "^5.0.1",
-        "@types/bun": "latest",
-        "concurrently": "^9.1.0",
-        "svelte": "^5.14.1",
-        "typescript": "^5.7.2",
-        "vite": "^6.0.3",
-      },
-    },
     "packages/contracts": {
       "name": "@siftone/contracts",
       "version": "0.0.0",
@@ -189,8 +173,6 @@
     "@siftone/cli": ["@siftone/cli@workspace:cli"],
 
     "@siftone/contracts": ["@siftone/contracts@workspace:packages/contracts"],
-
-    "@siftone/desktop": ["@siftone/desktop@workspace:desktop"],
 
     "@siftone/server": ["@siftone/server@workspace:server"],
 

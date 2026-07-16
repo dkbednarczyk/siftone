@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, dirname, extname, join, relative } from "node:path";
 import type { PublicationInput } from "../publication/publish";
+import { mapBounded } from "../util/util";
 import { canonicalRelativePath } from "./canonical-path";
 import type { Desired, Entry } from "./reconcile-types";
 
-const SOURCE_STAT_CONCURRENCY = 32;
+const SOURCE_STAT_CONCURRENCY = 8;
 
 function kindFor(path: string): "audio" | "artwork" {
 	return [".flac", ".mp3"].includes(extname(path).toLowerCase())
@@ -29,32 +30,6 @@ export function manifestHash(entries: readonly Entry[]): string {
 		.digest("hex");
 }
 
-export async function mapBounded<T, R>(
-	values: readonly T[],
-	mapper: (value: T) => Promise<R>,
-): Promise<R[]> {
-	const result = new Array<R>(values.length);
-	let cursor = 0;
-	const workers: Promise<void>[] = [];
-	for (
-		let worker = 0;
-		worker < Math.min(SOURCE_STAT_CONCURRENCY, values.length);
-		worker++
-	) {
-		workers.push(
-			(async (): Promise<void> => {
-				while (true) {
-					const index = cursor++;
-					if (index >= values.length) return;
-					result[index] = await mapper(values[index]);
-				}
-			})(),
-		);
-	}
-	await Promise.all(workers);
-	return result;
-}
-
 export async function desiredFor(
 	watchRoot: string,
 	generatedLibraryRoot: string,
@@ -67,32 +42,40 @@ export async function desiredFor(
 	const containerPath = canonicalRelativePath(
 		relative(watchRoot, input.root).replaceAll("\\", "/"),
 	);
-	const entries = await mapBounded(input.entries, async (entry) => {
-		const relativeSourcePath = canonicalRelativePath(
-			relative(input.root, entry.sourcePath).replaceAll("\\", "/"),
-		);
-		const sourcePath = canonicalRelativePath(
-			relative(watchRoot, entry.sourcePath).replaceAll("\\", "/"),
-		);
-		const destinationName = basename(entry.destinationPath);
-		if (
-			destinationName.includes("/") ||
-			destinationName.includes("\\") ||
-			dirname(entry.destinationPath) !== destination
-		)
-			throw new Error(`Unsafe publication entry: ${entry.sourcePath}`);
-		const status = await lstat(entry.sourcePath, { bigint: true });
-		if (!status.isFile() || status.isSymbolicLink())
-			throw new Error(`Source is not a real file: ${entry.sourcePath}`);
-		return {
-			sourcePath,
-			relativeSourcePath,
-			destinationName,
-			size: status.size,
-			mtimeNs: status.mtimeNs,
-			kind: kindFor(entry.sourcePath),
-		};
-	});
+	const entries = await mapBounded(
+		input.entries,
+		async (entry) => {
+			const relativeSourcePath = canonicalRelativePath(
+				relative(input.root, entry.sourcePath).replaceAll("\\", "/"),
+			);
+			const sourcePath = canonicalRelativePath(
+				relative(watchRoot, entry.sourcePath).replaceAll("\\", "/"),
+			);
+			const destinationName = basename(entry.destinationPath);
+			if (
+				destinationName.includes("/") ||
+				destinationName.includes("\\") ||
+				dirname(entry.destinationPath) !== destination
+			)
+				throw new Error(
+					`Unsafe publication entry: ${entry.sourcePath}`,
+				);
+			const status = await lstat(entry.sourcePath, { bigint: true });
+			if (!status.isFile() || status.isSymbolicLink())
+				throw new Error(
+					`Source is not a real file: ${entry.sourcePath}`,
+				);
+			return {
+				sourcePath,
+				relativeSourcePath,
+				destinationName,
+				size: status.size,
+				mtimeNs: status.mtimeNs,
+				kind: kindFor(entry.sourcePath),
+			};
+		},
+		SOURCE_STAT_CONCURRENCY,
+	);
 	entries.sort((a, b) => a.destinationName.localeCompare(b.destinationName));
 	if (
 		entries.length === 0 ||

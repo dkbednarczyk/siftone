@@ -1,5 +1,5 @@
 import { basename, dirname, extname, relative, sep } from "node:path";
-import type { AudioTags } from "../metadata/tags";
+import type { AudioTagReader, AudioTags } from "../metadata/tags";
 import { errorMessage } from "../util/util";
 import type { DiscoveredCandidate } from "./discover";
 
@@ -57,8 +57,6 @@ export type CandidateValidationResult =
 			issues: readonly CandidateValidationIssue[];
 	  }>;
 
-export type AudioTagReader = (path: string) => Promise<AudioTags>;
-
 function requiredText(value: string | undefined): string | undefined {
 	const text = value?.trim();
 	return text === "" ? undefined : text;
@@ -78,9 +76,9 @@ function issue(
 
 function normalizeArtworkName(value: string): string {
 	return value
-		.normalize("NFKD")
-		.replace(/\p{M}/gu, "")
-		.replace(/[^\p{L}\p{N}]+/gu, "")
+		.normalize("NFKD") // Decompose accents and compatibility characters
+		.replace(/\p{M}/gu, "") // Remove combining marks such as accents
+		.replace(/[^\p{L}\p{N}]+/gu, "") // Remove everything except Unicode letters/numbers
 		.toLowerCase();
 }
 
@@ -133,14 +131,16 @@ function selectArtworkPath(
 			label: "cover",
 			matches: eligiblePaths.filter(
 				(path) =>
-					normalizeArtworkName(basename(path, extname(path))) === "cover",
+					normalizeArtworkName(basename(path, extname(path))) ===
+					"cover",
 			),
 		},
 		{
 			label: "album-name",
 			matches: eligiblePaths.filter(
 				(path) =>
-					normalizeArtworkName(basename(path, extname(path))) === albumName,
+					normalizeArtworkName(basename(path, extname(path))) ===
+					albumName,
 			),
 		},
 	];
@@ -151,13 +151,18 @@ function selectArtworkPath(
 		);
 
 		const [path, ...ignoredPaths] = matches;
+
+		// no matches
 		if (path === undefined) {
 			continue;
 		}
+
+		// one match
 		if (ignoredPaths.length === 0) {
 			return { path };
 		}
 
+		// multiple
 		return {
 			path,
 			warning: {
@@ -174,8 +179,8 @@ function selectArtworkPath(
 
 /**
  * Validates the embedded metadata required to create a deterministic album
- * layout. It reports candidate errors instead of throwing so a bad release
- * cannot stop discovery of other source folders.
+ * layout. It reports issues from the first invalid file instead of throwing so
+ * a bad release cannot stop discovery of other source folders or spam logs.
  */
 export async function validateCandidate(
 	candidate: DiscoveredCandidate,
@@ -183,9 +188,9 @@ export async function validateCandidate(
 ): Promise<CandidateValidationResult> {
 	const issues: CandidateValidationIssue[] = [];
 	const tracks: ValidatedTrack[] = [];
-	const albums = new Set<string>();
+	let expectedAlbum: string | undefined;
+	let expectedAlbumArtist: string | undefined;
 	const artists = new Set<string>();
-	const albumArtists = new Set<string | undefined>();
 	const discTracks = new Set<string>();
 
 	for (const path of candidate.audioPaths) {
@@ -194,55 +199,68 @@ export async function validateCandidate(
 			tags = await readTags(path);
 		} catch (error) {
 			issues.push(issue("TAG_READ_ERROR", errorMessage(error), path));
-
-			continue;
+			break;
 		}
 
 		const title = requiredText(tags.title);
 		const artist = requiredText(tags.artist);
-		const album = requiredText(tags.album);
-		const albumArtist = requiredText(tags.albumArtist);
+		const trackAlbum = requiredText(tags.album);
+		const trackAlbumArtist = requiredText(tags.albumArtist);
+		const fileIssues: CandidateValidationIssue[] = [];
 
 		if (title === undefined) {
-			issues.push(issue("MISSING_TITLE", "TITLE is required", path));
+			fileIssues.push(issue("MISSING_TITLE", "TITLE is required", path));
 		}
+
 		if (artist === undefined) {
-			issues.push(issue("MISSING_ARTIST", "ARTIST is required", path));
+			fileIssues.push(
+				issue("MISSING_ARTIST", "ARTIST is required", path),
+			);
 		}
-		if (album === undefined) {
-			issues.push(issue("MISSING_ALBUM", "ALBUM is required", path));
+
+		if (trackAlbum === undefined) {
+			fileIssues.push(issue("MISSING_ALBUM", "ALBUM is required", path));
 		}
+
 		if (tags.trackNumber === undefined) {
-			issues.push(
+			fileIssues.push(
 				issue("MISSING_TRACK_NUMBER", "TRACKNUMBER is required", path),
 			);
 		} else if (!isPositiveInteger(tags.trackNumber)) {
-			issues.push(
-				issue("INVALID_TRACK_NUMBER", "TRACKNUMBER must be positive", path),
-			);
-		}
-		if (tags.discNumber !== undefined && !isPositiveInteger(tags.discNumber)) {
-			issues.push(
-				issue("INVALID_DISC_NUMBER", "DISCNUMBER must be positive", path),
+			fileIssues.push(
+				issue(
+					"INVALID_TRACK_NUMBER",
+					"TRACKNUMBER must be positive",
+					path,
+				),
 			);
 		}
 
-		if (artist !== undefined) {
-			artists.add(artist);
+		if (
+			tags.discNumber !== undefined &&
+			!isPositiveInteger(tags.discNumber)
+		) {
+			fileIssues.push(
+				issue(
+					"INVALID_DISC_NUMBER",
+					"DISCNUMBER must be positive",
+					path,
+				),
+			);
 		}
-		if (album !== undefined) {
-			albums.add(album);
+
+		if (fileIssues.length !== 0) {
+			issues.push(...fileIssues);
+			break;
 		}
-		albumArtists.add(albumArtist);
 
 		if (
 			title === undefined ||
 			artist === undefined ||
-			album === undefined ||
-			!isPositiveInteger(tags.trackNumber) ||
-			(tags.discNumber !== undefined && !isPositiveInteger(tags.discNumber))
+			trackAlbum === undefined ||
+			!isPositiveInteger(tags.trackNumber)
 		) {
-			continue;
+			throw new Error("Candidate validation invariant violated");
 		}
 
 		const discNumber = tags.discNumber ?? 1;
@@ -255,10 +273,51 @@ export async function validateCandidate(
 					path,
 				),
 			);
-			continue;
+
+			break;
+		}
+
+		if (expectedAlbum !== undefined && expectedAlbum !== trackAlbum) {
+			issues.push(
+				issue("CONFLICTING_ALBUM", "Tracks must share one ALBUM", path),
+			);
+
+			break;
+		}
+
+		if (tracks.length > 0 && expectedAlbumArtist !== trackAlbumArtist) {
+			issues.push(
+				issue(
+					"CONFLICTING_ALBUM_ARTIST",
+					"ALBUMARTIST must be present on every track or absent on every track",
+					path,
+				),
+			);
+
+			break;
+		}
+
+		if (
+			trackAlbumArtist === undefined &&
+			artists.size > 0 &&
+			!artists.has(artist)
+		) {
+			issues.push(
+				issue(
+					"MISSING_ALBUM_ARTIST",
+					"ALBUMARTIST is required when tracks have different ARTIST values",
+					path,
+				),
+			);
+
+			break;
 		}
 
 		discTracks.add(discTrackKey);
+		expectedAlbum = trackAlbum;
+		expectedAlbumArtist = trackAlbumArtist;
+		artists.add(artist);
+
 		tracks.push({
 			path,
 			title,
@@ -268,51 +327,33 @@ export async function validateCandidate(
 		});
 	}
 
-	if (albums.size > 1) {
-		issues.push(issue("CONFLICTING_ALBUM", "Tracks must share one ALBUM"));
-	}
-	if (albumArtists.size > 1) {
-		issues.push(
-			issue(
-				"CONFLICTING_ALBUM_ARTIST",
-				"ALBUMARTIST must be present on every track or absent on every track",
-			),
-		);
-	}
-	if (albumArtists.has(undefined) && artists.size > 1) {
-		issues.push(
-			issue(
-				"MISSING_ALBUM_ARTIST",
-				"ALBUMARTIST is required when tracks have different ARTIST values",
-			),
-		);
-	}
-
 	if (issues.length > 0) {
 		return { valid: false, root: candidate.root, issues };
 	}
 
-	const [album] = albums;
-	const [configuredAlbumArtist] = albumArtists;
-	const albumArtist = configuredAlbumArtist ?? artists.values().next().value;
-	if (albumArtist === undefined) {
+	if (expectedAlbum === undefined || tracks.length === 0) {
 		return {
 			valid: false,
 			root: candidate.root,
-			issues: [issue("MISSING_ARTIST", "ARTIST is required")],
+			issues: [issue("MISSING_ALBUM", "ALBUM is required")],
 		};
 	}
 
-	const artwork = selectArtworkPath(candidate, tracks, album);
+	const albumArtist = expectedAlbumArtist ?? tracks[0].artist;
+	const artwork = selectArtworkPath(candidate, tracks, expectedAlbum);
 	return {
 		valid: true,
 		candidate: {
 			root: candidate.root,
-			album,
+			album: expectedAlbum,
 			albumArtist,
 			tracks,
-			...(artwork.path === undefined ? {} : { artworkPath: artwork.path }),
+			...(artwork.path === undefined
+				? {}
+				: { artworkPath: artwork.path }),
 		},
-		...(artwork.warning === undefined ? {} : { warnings: [artwork.warning] }),
+		...(artwork.warning === undefined
+			? {}
+			: { warnings: [artwork.warning] }),
 	};
 }

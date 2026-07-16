@@ -1,6 +1,6 @@
 # `@siftone/cli`
 
-Cross-platform command-line management client for the Siftone server. It uses the same authenticated REST/SSE contract as the desktop app and never accesses a music library directly.
+Cross-platform command-line management client for the Siftone server.
 
 ## V1 command scope
 

@@ -9,7 +9,6 @@ Siftone is a Bun-first music-library management system. It watches a single Linu
 | Workspace | Purpose |
 | --- | --- |
 | [`server/`](server/README.md) | Linux daemon: scan, validate, publish, state, and source watching (management API and broader artwork pipeline planned). |
-| [`desktop/`](desktop/README.md) | Electrobun + Svelte management application. |
 | [`cli/`](cli/README.md) | Cross-platform command-line management client. |
 | [`packages/contracts/`](packages/contracts/README.md) | Shared API schemas, types, and event contracts. |
 
@@ -19,21 +18,19 @@ Siftone is a Bun-first music-library management system. It watches a single Linu
 - Only the server process may mutate generated-library, cache, staging, state, and backup roots; those roots must not overlap source roots.
 - Embedded FLAC/MP3 tags are the sole metadata authority. Folder names, CUE/M3U files, and rip logs never override tags and are not published.
 - Generated albums contain audio symlinks and optional `cover.{ext}` only. Existing unmanaged generated-library entries are never adopted or changed.
-- Desktop and CLI are management clients only; playback and tag editing belong to other tools.
+- CLI is a management client only; playback and tag editing belong to other tools.
 
 ## Official v1 targets
 
 | Component | Targets |
 | --- | --- |
 | Server | Linux x64. Linux ARM64 is deferred. |
-| Desktop and CLI | Windows x64, macOS x64/ARM64, Linux x64. |
+| CLI | Windows x64, macOS ARM64, Linux x64. |
 
 ## Development
 
 ```bash
 bun install
-bun run desktop:dev
-bun run desktop:build
 bun run --cwd server test
 bun run --cwd server typecheck
 bun run --cwd server build:linux-x64

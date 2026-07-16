@@ -1,6 +1,5 @@
-export const DATABASE_FILE = "library-state-v2.sqlite";
+export const DATABASE_FILE = "library-state.sqlite";
 export const APPLICATION_ID = 1397577798;
-export const SCHEMA_VERSION = 2;
 
 // SQLite has no regex CHECK. This deliberately verbose predicate is kept next to
 // the schema; canonicalRelativePath applies the identical rule at the boundary.
@@ -15,29 +14,6 @@ function pathCheck(column: string): string {
 }
 
 const UUID_CHECK = `id GLOB '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-4[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[89ABab][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'`;
-
-/** The complete, destructive v2 state format. Do not add migrations here. */
-export const BENCHMARK_SQL = {
-	insertContainer:
-		"INSERT INTO source_containers VALUES (?, ?, 'present', NULL, 1)",
-	insertRelease:
-		"INSERT INTO source_releases (id, container_id, logical_release_key, album_artist, album_title) VALUES (?, ?, ?, 'Artist', 'Album')",
-	insertSourceFile: "INSERT INTO source_files VALUES (?, ?, ?, ?, ?, 'audio')",
-	insertImport: "INSERT INTO imports VALUES (?, ?, ?, 1, 1)",
-	insertDestination: "INSERT INTO published_destinations VALUES (?, ?, ?, 1)",
-	lookupSource:
-		"SELECT source_release_id FROM source_files WHERE source_path = ?",
-	replaceManifest: "DELETE FROM source_files WHERE source_release_id = ?",
-	unresolvedOperation: "SELECT id FROM operations WHERE import_id = ?",
-	targetedReconciliation:
-		"SELECT i.id FROM imports i JOIN source_releases sr ON sr.id = i.source_release_id JOIN source_containers sc ON sc.id = sr.container_id WHERE sc.root_path = ?",
-	explainSource:
-		"EXPLAIN QUERY PLAN SELECT source_release_id FROM source_files WHERE source_path = 'Release-1/00.flac'",
-	explainOperation:
-		"EXPLAIN QUERY PLAN SELECT id FROM operations WHERE import_id = '00000000-0000-4003-8000-000000000000'",
-	explainReconciliation:
-		"EXPLAIN QUERY PLAN SELECT i.id FROM imports i JOIN source_releases sr ON sr.id = i.source_release_id JOIN source_containers sc ON sc.id = sr.container_id WHERE sc.root_path = 'Release-1'",
-} as const;
 
 export const SCHEMA_SQL = `
 	CREATE TABLE source_containers (
@@ -128,6 +104,8 @@ export const SCHEMA_SQL = `
 		CHECK ((kind = 'unmanaged_output' AND import_id IS NULL AND operation_id IS NULL) OR (kind = 'attention_required' AND ((import_id IS NOT NULL) <> (operation_id IS NOT NULL))) )
 	) STRICT;
 	CREATE INDEX reviews_attention_idx ON reviews(kind) WHERE kind = 'attention_required';
+	CREATE INDEX reviews_import_idx ON reviews(import_id) WHERE import_id IS NOT NULL;
+	CREATE INDEX reviews_operation_idx ON reviews(operation_id) WHERE operation_id IS NOT NULL;
 	CREATE TABLE reconciliation_state (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		required INTEGER NOT NULL CHECK (required IN (0, 1)),
@@ -137,5 +115,4 @@ export const SCHEMA_SQL = `
 	) STRICT;
 	INSERT INTO reconciliation_state VALUES (1, 1, NULL, NULL, 0);
 	PRAGMA application_id = ${APPLICATION_ID};
-	PRAGMA user_version = ${SCHEMA_VERSION};
 `;

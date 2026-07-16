@@ -7,7 +7,9 @@ gonic_home="$HOME/.gonic"
 pid_path="$gonic_home/gonic.pid"
 log_path="$gonic_home/gonic.log"
 db_path="$gonic_home/gonic.db"
-listen_addr="127.0.0.1:4747"
+listen_host="127.0.0.1"
+listen_port="4747"
+listen_addr="$listen_host:$listen_port"
 base_url="http://$listen_addr"
 gonic_user="${GONIC_USER:-admin}"
 gonic_password="${GONIC_PASSWORD:-admin}"
@@ -19,6 +21,24 @@ ensure_directories() {
 
 is_running() {
 	[[ -f "$pid_path" ]] && kill -0 "$(<"$pid_path")" 2>/dev/null
+}
+
+port_in_use() {
+	if command -v ss >/dev/null 2>&1; then
+		ss -ltn "sport = :$listen_port" | grep -q LISTEN
+		return
+	fi
+
+	if command -v lsof >/dev/null 2>&1; then
+		lsof -nP -iTCP:"$listen_port" -sTCP:LISTEN >/dev/null 2>&1
+		return
+	fi
+
+	if (: >"/dev/tcp/$listen_host/$listen_port") >/dev/null 2>&1; then
+		return 0
+	fi
+
+	return 1
 }
 
 subsonic_request() {
@@ -59,7 +79,7 @@ start() {
 		echo "Gonic is already running (PID $(<"$pid_path"))."
 		return
 	fi
-	if ss -ltn "sport = :${listen_addr##*:}" | grep -q LISTEN; then
+	if port_in_use; then
 		echo "Refusing to start: $listen_addr is already in use." >&2
 		exit 1
 	fi
@@ -69,7 +89,7 @@ start() {
 		>"$log_path" 2>&1 &
 	echo $! >"$pid_path"
 
-	for _ in $(seq 1 40); do
+	for ((attempt = 0; attempt < 40; attempt += 1)); do
 		if is_running && subsonic_request ping >/dev/null 2>&1; then
 			echo "Gonic is ready at $base_url (PID $(<"$pid_path"))."
 			return
@@ -92,7 +112,7 @@ stop() {
 	local pid
 	pid="$(<"$pid_path")"
 	kill "$pid"
-	for _ in $(seq 1 40); do
+	for ((attempt = 0; attempt < 40; attempt += 1)); do
 		if ! kill -0 "$pid" 2>/dev/null; then
 			rm -f "$pid_path"
 			echo "Stopped Gonic (PID $pid)."

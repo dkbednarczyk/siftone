@@ -4,15 +4,12 @@
 	"private": true,
 	"type": "module",
 	"workspaces": [
-		"desktop",
 		"server",
 		"cli",
 		"packages/*"
 	],
 	"scripts": {
-		"desktop:dev": "bun run --cwd desktop dev",
-		"desktop:build": "bun run --cwd desktop build:canary",
-		"lint": "bunx biome check"
+		"lint": "bunx biome check --fix"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.3"

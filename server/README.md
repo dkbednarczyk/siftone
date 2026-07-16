@@ -169,7 +169,7 @@ M3U, and rip logs are never published or trusted as metadata.
 
 ## State and recovery
 
-- **SQLite (`bun:sqlite`)** uses the destructive `library-state-v2.sqlite`
+- **SQLite (`bun:sqlite`)** uses the destructive `library-state.sqlite`
   format: source containers/releases/files, imports, published destinations/entries,
   frozen operations, and FK-owned reviews. It uses `STRICT` tables, WAL, foreign
   keys, a busy timeout, and `synchronous=NORMAL`; it has no migration or
@@ -190,8 +190,8 @@ M3U, and rip logs are never published or trusted as metadata.
   reconciliation required; startup performs that reconciliation after operation
   recovery because the source may have changed while Siftone was offline.
 - Keep boot-critical paths/network settings in a server-owned TOML file. Future
-  desktop/CLI-editable runtime settings will live in SQLite. Daily backups are
-  self-contained v2 snapshots named by UTC date.
+  CLI-editable runtime settings will live in SQLite. Daily backups are
+  self-contained snapshots named by UTC date.
 
 ## Planned API and security
 

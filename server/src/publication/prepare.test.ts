@@ -11,7 +11,7 @@ function contender(
 ): PublicationContender {
 	return {
 		root,
-		logicalReleaseKey: "artist\u0000album",
+		logicalReleaseKey: '["artist","album"]',
 		albumArtist: "Artist",
 		albumTitle: "Album",
 		entries: [
@@ -40,7 +40,11 @@ describe("publication collision arbitration", () => {
 		expect(arbitratePublicationContenders([flac, mp3])).toEqual({
 			plans: [],
 			suppressed: [],
-			unresolved: [expect.objectContaining({ contenders: [flac, mp3] })],
+			unresolved: [
+				expect.objectContaining({
+					contenders: [flac, mp3],
+				}),
+			],
 		});
 	});
 });

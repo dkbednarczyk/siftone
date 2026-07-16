@@ -60,7 +60,9 @@ export async function ensureDestinationParent(
 	await mkdir(parent, { recursive: true });
 	const status = await lstat(parent);
 	if (!status.isDirectory() || status.isSymbolicLink())
-		throw new InvalidOperationState(`Destination parent is unsafe: ${parent}`);
+		throw new InvalidOperationState(
+			`Destination parent is unsafe: ${parent}`,
+		);
 }
 
 export function operationPaths(
@@ -72,7 +74,9 @@ export function operationPaths(
 ) {
 	canonicalRelativePath(stagingName);
 	if (stagingName.includes("/"))
-		throw new InvalidOperationState("Staging name must be one path segment");
+		throw new InvalidOperationState(
+			"Staging name must be one path segment",
+		);
 	const canonicalDestination = canonicalRelativePath(destinationPath);
 	const destination = join(
 		generatedLibraryRoot,

@@ -4,12 +4,7 @@ import { readdir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { isCanonicalRelativePath } from "./canonical-path";
-import {
-	APPLICATION_ID,
-	DATABASE_FILE,
-	SCHEMA_SQL,
-	SCHEMA_VERSION,
-} from "./schema";
+import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 
 export { DATABASE_FILE } from "./schema";
 
@@ -52,7 +47,12 @@ function createFreshSchema(database: Database): void {
 function schemaObjects(database: Database): unknown[] {
 	return database
 		.query<
-			{ type: string; name: string; tbl_name: string; sql: string | null },
+			{
+				type: string;
+				name: string;
+				tbl_name: string;
+				sql: string | null;
+			},
 			[]
 		>(
 			"SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
@@ -76,17 +76,13 @@ export function validateImportStateSchema(database: Database): void {
 	const appId = database
 		.query<{ application_id: number }, []>("PRAGMA application_id")
 		.get();
-	const version = database
-		.query<{ user_version: number }, []>("PRAGMA user_version")
-		.get();
 	if (
 		appId?.application_id !== APPLICATION_ID ||
-		version?.user_version !== SCHEMA_VERSION ||
 		JSON.stringify(schemaObjects(database)) !==
 			JSON.stringify(expectedSchemaObjects())
 	) {
 		throw new ImportStateError(
-			"Incompatible SQLite library state v2; delete and recreate it instead of migrating",
+			"Incompatible SQLite library state; delete and recreate it instead of migrating",
 		);
 	}
 }
@@ -116,7 +112,7 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
 	return (await readdir(path)).length === 0;
 }
 
-/** Opens the one destructive v2 database. SQLite itself serializes writers. */
+/** Opens the destructive library-state database. SQLite itself serializes writers. */
 export async function openImportState({
 	stateRoot,
 	generatedLibraryRoot,
@@ -130,7 +126,7 @@ export async function openImportState({
 		!(await isEmptyDirectory(generatedLibraryRoot))
 	) {
 		throw new ImportStateError(
-			"Generated-library root is non-empty but v2 state is absent; refusing to adopt output",
+			"Generated-library root is non-empty but library state is absent; refusing to adopt output",
 		);
 	}
 
@@ -153,10 +149,10 @@ export async function openImportState({
 				}
 
 				const destination = dirname(entry.destinationPath);
-				const path = relative(generatedLibraryRoot, destination).replaceAll(
-					"\\",
-					"/",
-				);
+				const path = relative(
+					generatedLibraryRoot,
+					destination,
+				).replaceAll("\\", "/");
 
 				if (!isCanonicalRelativePath(path)) {
 					throw new ImportStateError(

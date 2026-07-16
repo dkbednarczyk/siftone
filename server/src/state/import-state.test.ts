@@ -9,11 +9,13 @@ import { DATABASE_FILE, openImportState } from "./import-state";
 const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(
-		roots.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+		roots
+			.splice(0)
+			.map((path) => rm(path, { recursive: true, force: true })),
 	);
 });
 async function fixture() {
-	const root = await mkdtemp(join(tmpdir(), "siftone-v2-"));
+	const root = await mkdtemp(join(tmpdir(), "siftone-state-"));
 	roots.push(root);
 	const state = join(root, "state");
 	const generated = join(root, "generated");
@@ -53,7 +55,7 @@ function seed(state: Awaited<ReturnType<typeof openImportState>>) {
 	return ids[2];
 }
 
-describe("library state v2", () => {
+describe("library state", () => {
 	test("uses strict WAL FK schema and bigint SQLite reads", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -70,7 +72,9 @@ describe("library state v2", () => {
 			state.database.query<{ mtime_ns: bigint }, []>(
 				"SELECT mtime_ns FROM source_files",
 			) as unknown as {
-				safeIntegers(value: boolean): { get(): { mtime_ns: bigint } | null };
+				safeIntegers(value: boolean): {
+					get(): { mtime_ns: bigint } | null;
+				};
 			}
 		)
 			.safeIntegers(true)
@@ -154,6 +158,55 @@ describe("library state v2", () => {
 		).toBe(0);
 		state.close();
 	});
+	test("indexes review foreign keys for parent cleanup", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		const importId = seed(state);
+		for (const [query, id] of [
+			["EXPLAIN QUERY PLAN DELETE FROM imports WHERE id = ?", importId],
+			["EXPLAIN QUERY PLAN DELETE FROM operations WHERE id = ?", ids[4]],
+		] as const) {
+			const details = state.database
+				.query<{ detail: string }, [string]>(query)
+				.all(id)
+				.map((row) => row.detail);
+			expect(
+				details.some((detail) => detail.includes("SCAN reviews")),
+			).toBe(false);
+		}
+		state.close();
+	});
+
+	test("starts targeted reconciliation from observed containers", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		seed(state);
+		const details = state.database
+			.query<{ detail: string }, [string]>(`
+				EXPLAIN QUERY PLAN
+				SELECT i.id
+				FROM json_each(?) observed
+				JOIN source_containers sc ON sc.root_path = observed.value
+				JOIN source_releases sr ON sr.container_id = sc.id
+				JOIN imports i ON i.source_release_id = sr.id
+			`)
+			.all(JSON.stringify(["Album"]))
+			.map((row) => row.detail);
+		expect(
+			details.some((detail) => detail.includes("SEARCH sc USING INDEX")),
+		).toBe(true);
+		expect(details.some((detail) => detail.includes("SCAN imports"))).toBe(
+			false,
+		);
+		state.close();
+	});
+
 	test("prevents unresolved operation ownership conflicts", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -183,7 +236,7 @@ describe("library state v2", () => {
 		).toThrow();
 		state.close();
 	});
-	test("does not recognize prior database filename as v2", async () => {
+	test("uses the configured library-state filename", async () => {
 		const paths = await fixture();
 		new Database(join(paths.state, "imports.sqlite")).close();
 		const state = await openImportState({

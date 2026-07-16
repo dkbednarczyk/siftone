@@ -11,6 +11,7 @@ export async function restoreState(
 		backupPath,
 		databasePath: resolve(config.paths.stateRoot, DATABASE_FILE),
 	});
+
 	console.info(
 		"Restored verified SQLite library state. Start Siftone normally.",
 	);

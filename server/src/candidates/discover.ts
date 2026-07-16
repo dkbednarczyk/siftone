@@ -1,10 +1,13 @@
 import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { errorMessage } from "../util/util";
+import { errorMessage, mapBounded } from "../util/util";
+
+const DISCOVERY_CONCURRENCY = 8;
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([".flac", ".mp3"]);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
+
 const DEFAULT_MAX_DEPTH = 8;
 const DEFAULT_MAX_ENTRIES = 10_000;
 
@@ -56,9 +59,11 @@ function isSupportedImageFile(path: string): boolean {
 
 function resolveLimit(value: number | undefined, fallback: number): number {
 	const limit = value ?? fallback;
+
 	if (!Number.isSafeInteger(limit) || limit < 1) {
 		throw new RangeError("Discovery limits must be positive safe integers");
 	}
+
 	return limit;
 }
 
@@ -75,6 +80,7 @@ async function discoverSourcePaths(
 		entries = await readdir(directory, { withFileTypes: true });
 	} catch (error) {
 		issues.push({ path: directory, message: errorMessage(error) });
+
 		return { audioPaths: [], imagePaths: [] };
 	}
 
@@ -99,20 +105,33 @@ async function discoverSourcePaths(
 		budget.entries += 1;
 
 		const path = join(directory, entry.name);
-		let status: Stats;
-
-		try {
-			status = await lstat(path);
-		} catch (error) {
-			issues.push({ path, message: errorMessage(error) });
+		let kind: "directory" | "file" | undefined;
+		if (entry.isSymbolicLink()) {
 			continue;
 		}
-
-		if (status.isSymbolicLink()) {
-			continue;
+		if (entry.isDirectory()) {
+			kind = "directory";
+		} else if (entry.isFile()) {
+			kind = "file";
+		} else {
+			let status: Stats;
+			try {
+				status = await lstat(path);
+			} catch (error) {
+				issues.push({ path, message: errorMessage(error) });
+				continue;
+			}
+			if (status.isSymbolicLink()) {
+				continue;
+			}
+			if (status.isDirectory()) {
+				kind = "directory";
+			} else if (status.isFile()) {
+				kind = "file";
+			}
 		}
 
-		if (status.isDirectory()) {
+		if (kind === "directory") {
 			if (depth + 1 >= limits.maxDepth) {
 				issues.push({
 					path,
@@ -131,7 +150,7 @@ async function discoverSourcePaths(
 
 			audioPaths.push(...nested.audioPaths);
 			imagePaths.push(...nested.imagePaths);
-		} else if (status.isFile()) {
+		} else if (kind === "file") {
 			if (isSupportedAudioFile(path)) {
 				audioPaths.push(path);
 			} else if (isSupportedImageFile(path)) {
@@ -155,7 +174,25 @@ export async function discoverCandidate(
 		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
 		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
 	};
+
 	const issues: CandidateDiscoveryIssue[] = [];
+	let status: Stats;
+	try {
+		status = await lstat(root);
+	} catch (error) {
+		return { issues: [{ path: root, message: errorMessage(error) }] };
+	}
+	if (status.isSymbolicLink() || !status.isDirectory()) {
+		return {
+			issues: [
+				{
+					path: root,
+					message: "Source candidate root is not a real directory",
+				},
+			],
+		};
+	}
+
 	const paths = await discoverSourcePaths(
 		root,
 		0,
@@ -163,6 +200,7 @@ export async function discoverCandidate(
 		{ entries: 0, limitReported: false },
 		issues,
 	);
+
 	return paths.audioPaths.length === 0
 		? { issues }
 		: {
@@ -189,40 +227,21 @@ export async function discoverCandidates(
 	};
 
 	const entries = await readdir(watchRoot, { withFileTypes: true });
+	const roots = entries
+		.toSorted((first, second) => comparePaths(first.name, second.name))
+		.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+		.map((entry) => join(watchRoot, entry.name));
+	const results = await mapBounded(
+		roots,
+		(root) => discoverCandidate(root, resolvedLimits),
+		DISCOVERY_CONCURRENCY,
+	);
 	const candidates: DiscoveredCandidate[] = [];
 	const issues: CandidateDiscoveryIssue[] = [];
-
-	for (const entry of entries.sort((first, second) =>
-		comparePaths(first.name, second.name),
-	)) {
-		const root = join(watchRoot, entry.name);
-		let status: Stats;
-
-		try {
-			status = await lstat(root);
-		} catch (error) {
-			issues.push({ path: root, message: errorMessage(error) });
-			continue;
-		}
-
-		if (!status.isDirectory() || status.isSymbolicLink()) {
-			continue;
-		}
-
-		const sourcePaths = await discoverSourcePaths(
-			root,
-			0,
-			resolvedLimits,
-			{ entries: 0, limitReported: false },
-			issues,
-		);
-
-		if (sourcePaths.audioPaths.length > 0) {
-			candidates.push({
-				root,
-				audioPaths: sourcePaths.audioPaths.sort(comparePaths),
-				imagePaths: sourcePaths.imagePaths.sort(comparePaths),
-			});
+	for (const result of results) {
+		issues.push(...result.issues);
+		if (result.candidate !== undefined) {
+			candidates.push(result.candidate);
 		}
 	}
 

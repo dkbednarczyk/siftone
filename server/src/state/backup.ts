@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { type ImportState, validateImportStateSchema } from "./import-state";
 
-const BACKUP_PREFIX = "library-state-v2-";
+const BACKUP_PREFIX = "library-state-";
 const BACKUP_SUFFIX = ".sqlite";
 const RETAINED_BACKUPS = 7;
 
@@ -24,7 +24,7 @@ function hasSidecars(path: string): boolean {
 }
 
 async function verifySnapshot(path: string): Promise<void> {
-	const database = new Database(path, { readonly: true, strict: true });
+	const database = new Database(path, { strict: true });
 
 	try {
 		const result = database
@@ -51,7 +51,8 @@ async function verifySnapshot(path: string): Promise<void> {
 async function backupPaths(backupRoot: string): Promise<string[]> {
 	return (await readdir(backupRoot))
 		.filter(
-			(name) => name.startsWith(BACKUP_PREFIX) && name.endsWith(BACKUP_SUFFIX),
+			(name) =>
+				name.startsWith(BACKUP_PREFIX) && name.endsWith(BACKUP_SUFFIX),
 		)
 		.toSorted()
 		.map((name) => join(backupRoot, name));
@@ -72,7 +73,21 @@ export async function createDailyBackup(
 
 	const temporary = `${path}.tmp-${process.pid}`;
 	try {
-		await writeFile(temporary, Uint8Array.from(state.database.serialize()));
+		const snapshot = state.database.serialize();
+		if (!(snapshot.buffer instanceof ArrayBuffer)) {
+			throw new Error(
+				"SQLite snapshot uses an unsupported shared buffer",
+			);
+		}
+
+		await writeFile(
+			temporary,
+			new Uint8Array(
+				snapshot.buffer,
+				snapshot.byteOffset,
+				snapshot.byteLength,
+			),
+		);
 		await verifySnapshot(temporary);
 		await rename(temporary, path);
 

@@ -6,18 +6,25 @@ import {
 	discoverCandidates,
 } from "../candidates/discover";
 import {
-	type AudioTagReader,
 	type CandidateValidationIssue,
 	type CandidateValidationWarning,
 	validateCandidate,
 } from "../candidates/validate";
-import { readAudioTags } from "../metadata/tags";
+import {
+	type AudioTagReader,
+	type AudioTags,
+	readAudioTags,
+} from "../metadata/tags";
+import { mapBounded } from "../util/util";
 import {
 	type PlannedSymlink,
 	type PublicationPlanIssue,
 	planPublication,
 } from "./plan";
 import type { PublicationInput } from "./publish";
+
+const PREPARATION_CONCURRENCY = 4;
+const TAG_READER_CONCURRENCY = 8;
 
 export type PreparedCandidate =
 	| Readonly<{
@@ -63,6 +70,25 @@ export type CollisionArbitration = Readonly<{
 	unresolved: readonly UnresolvedPublicationCollision[];
 }>;
 
+type CachedTagRead =
+	| Readonly<{ ok: true; tags: AudioTags }>
+	| Readonly<{ ok: false; error: unknown }>;
+
+function createCachedTagReader(
+	cache: ReadonlyMap<string, CachedTagRead>,
+): AudioTagReader {
+	return (path) => {
+		const cached = cache.get(path);
+		if (cached === undefined) {
+			return Promise.reject(new Error(`Missing cached tags for ${path}`));
+		}
+
+		return cached.ok
+			? Promise.resolve(cached.tags)
+			: Promise.reject(cached.error);
+	};
+}
+
 function compareText(first: string, second: string): number {
 	return first.localeCompare(second);
 }
@@ -76,13 +102,35 @@ function normalizeLogicalReleasePart(value: string): string {
 }
 
 function logicalReleaseKey(albumArtist: string, album: string): string {
-	return `${normalizeLogicalReleasePart(albumArtist)}\u0000${normalizeLogicalReleasePart(album)}`;
+	return JSON.stringify([
+		normalizeLogicalReleasePart(albumArtist),
+		normalizeLogicalReleasePart(album),
+	]);
 }
 
-function contenderKey(
-	contender: Readonly<{ root: string; entries: readonly PlannedSymlink[] }>,
+function contenderDestination(
+	contender: Readonly<{ entries: readonly PlannedSymlink[] }>,
 ): string {
-	return `${contender.root}\u0000${dirname(contender.entries[0]?.destinationPath ?? "")}`;
+	return dirname(contender.entries[0]?.destinationPath ?? "");
+}
+
+function addContender(
+	contenders: Map<string, Set<string>>,
+	contender: Readonly<{ root: string; entries: readonly PlannedSymlink[] }>,
+): void {
+	const destinations = contenders.get(contender.root) ?? new Set<string>();
+	destinations.add(contenderDestination(contender));
+	contenders.set(contender.root, destinations);
+}
+
+function hasContender(
+	contenders: ReadonlyMap<string, ReadonlySet<string>>,
+	contender: Readonly<{ root: string; entries: readonly PlannedSymlink[] }>,
+): boolean {
+	return (
+		contenders.get(contender.root)?.has(contenderDestination(contender)) ??
+		false
+	);
 }
 
 function trackSet(contender: PublicationContender): string[] | undefined {
@@ -95,6 +143,7 @@ function trackSet(contender: PublicationContender): string[] | undefined {
 			return name.slice(0, name.length - extname(name).length);
 		})
 		.toSorted(compareText);
+
 	return tracks.length === 0 ? undefined : tracks;
 }
 
@@ -106,8 +155,11 @@ function pureFormat(
 			[".flac", ".mp3"].includes(extname(entry.sourcePath).toLowerCase()),
 		)
 		.map((entry) => extname(entry.sourcePath).toLowerCase());
-	if (extensions.length === 0 || new Set(extensions).size !== 1)
+
+	if (extensions.length === 0 || new Set(extensions).size !== 1) {
 		return undefined;
+	}
+
 	return extensions[0] === ".flac" ? "flac" : "mp3";
 }
 
@@ -117,6 +169,7 @@ function sameTrackSet(
 ): boolean {
 	const firstTracks = trackSet(first);
 	const secondTracks = trackSet(second);
+
 	return (
 		firstTracks !== undefined &&
 		secondTracks !== undefined &&
@@ -135,11 +188,16 @@ export function arbitratePublicationContenders(
 ): CollisionArbitration {
 	const byDestination = new Map<string, PublicationContender[]>();
 	for (const contender of contenders) {
-		const destination = dirname(contender.entries[0]?.destinationPath ?? "");
+		const destination = dirname(
+			contender.entries[0]?.destinationPath ?? "",
+		);
+
 		const group = byDestination.get(destination) ?? [];
 		group.push(contender);
+
 		byDestination.set(destination, group);
 	}
+
 	const plans: PublicationContender[] = [];
 	const suppressed: PublicationContender[] = [];
 	const unresolved: UnresolvedPublicationCollision[] = [];
@@ -148,8 +206,14 @@ export function arbitratePublicationContenders(
 			plans.push(group[0]);
 			continue;
 		}
-		const flac = group.filter((contender) => pureFormat(contender) === "flac");
-		const mp3 = group.filter((contender) => pureFormat(contender) === "mp3");
+
+		const flac = group.filter(
+			(contender) => pureFormat(contender) === "flac",
+		);
+		const mp3 = group.filter(
+			(contender) => pureFormat(contender) === "mp3",
+		);
+
 		if (
 			flac.length === 1 &&
 			mp3.length === group.length - 1 &&
@@ -159,6 +223,7 @@ export function arbitratePublicationContenders(
 			suppressed.push(...mp3);
 			continue;
 		}
+
 		unresolved.push({
 			destination,
 			contenders: group.toSorted((first, second) =>
@@ -166,6 +231,7 @@ export function arbitratePublicationContenders(
 			),
 		});
 	}
+
 	return { plans, suppressed, unresolved };
 }
 
@@ -174,36 +240,118 @@ async function splitTagGroups(
 ): Promise<
 	readonly { candidate: DiscoveredCandidate; reader: AudioTagReader }[]
 > {
-	const tags = new Map<string, Awaited<ReturnType<AudioTagReader>> | unknown>();
-	const groups = new Map<string, string[]>();
-	for (const path of candidate.audioPaths) {
-		try {
-			const value = await readAudioTags(path);
-			tags.set(path, value);
-			const album = value.album?.trim() ?? "";
-			const artist = value.albumArtist?.trim() || value.artist?.trim() || "";
-			const key =
-				album === "" || artist === ""
-					? `invalid:${path}`
-					: `${artist}\u0000${album}`;
-			const paths = groups.get(key) ?? [];
-			paths.push(path);
-			groups.set(key, paths);
-		} catch (error) {
-			tags.set(path, error);
-			groups.set(`invalid:${path}`, [path]);
+	const tags = new Map<string, CachedTagRead>();
+	const groups: string[][] = [];
+	const groupedPaths = new Map<string, Map<string, string[]>>();
+	const reads = await mapBounded(
+		candidate.audioPaths,
+		async (path) => {
+			try {
+				return {
+					path,
+					result: { ok: true, tags: await readAudioTags(path) },
+				} as const;
+			} catch (error) {
+				return { path, result: { ok: false, error } } as const;
+			}
+		},
+		TAG_READER_CONCURRENCY,
+	);
+	for (const { path, result } of reads) {
+		tags.set(path, result);
+		if (!result.ok) {
+			groups.push([path]);
+			continue;
 		}
+
+		const album = result.tags.album?.trim() ?? "";
+		const artist =
+			result.tags.albumArtist?.trim() || result.tags.artist?.trim() || "";
+		if (album === "" || artist === "") {
+			groups.push([path]);
+			continue;
+		}
+
+		const albums = groupedPaths.get(artist) ?? new Map<string, string[]>();
+		const paths = albums.get(album);
+		if (paths === undefined) {
+			const newPaths = [path];
+			albums.set(album, newPaths);
+			groupedPaths.set(artist, albums);
+			groups.push(newPaths);
+			continue;
+		}
+
+		paths.push(path);
 	}
-	const reader: AudioTagReader = async (path) => {
-		const value = tags.get(path);
-		if (value instanceof Error) throw value;
-		if (value === undefined) throw new Error(`Missing cached tags for ${path}`);
-		return value as Awaited<ReturnType<AudioTagReader>>;
-	};
-	return [...groups.values()].map((audioPaths) => ({
+
+	const reader = createCachedTagReader(tags);
+
+	return groups.map((audioPaths) => ({
 		candidate: { ...candidate, audioPaths },
 		reader,
 	}));
+}
+
+type PreparedContainer = Readonly<{
+	candidates: readonly PreparedCandidate[];
+	contenders: readonly PublicationContender[];
+	incomplete: boolean;
+}>;
+
+async function prepareContainer(
+	container: DiscoveredCandidate,
+	generatedLibraryRoot: string,
+): Promise<PreparedContainer> {
+	const candidates: PreparedCandidate[] = [];
+	const contenders: PublicationContender[] = [];
+	let incomplete = false;
+	for (const { candidate, reader } of await splitTagGroups(container)) {
+		const validation = await validateCandidate(candidate, reader);
+		if (!validation.valid) {
+			incomplete = true;
+			candidates.push({
+				root: candidate.root,
+				status: "invalid",
+				issues: validation.issues,
+			});
+			continue;
+		}
+
+		const publication = planPublication(
+			validation.candidate,
+			generatedLibraryRoot,
+		);
+		if (!publication.valid) {
+			incomplete = true;
+			candidates.push({
+				root: candidate.root,
+				status: "unplannable",
+				issues: publication.issues,
+			});
+			continue;
+		}
+
+		const contender: PublicationContender = {
+			root: candidate.root,
+			logicalReleaseKey: logicalReleaseKey(
+				validation.candidate.albumArtist,
+				validation.candidate.album,
+			),
+			albumArtist: validation.candidate.albumArtist,
+			albumTitle: validation.candidate.album,
+			entries: publication.entries,
+		};
+		contenders.push(contender);
+		candidates.push({
+			root: candidate.root,
+			status: "planned",
+			entries: publication.entries,
+			warnings: validation.warnings,
+		});
+	}
+
+	return { candidates, contenders, incomplete };
 }
 
 function sourceContainerForIssue(
@@ -214,6 +362,7 @@ function sourceContainerForIssue(
 	if (inside === "" || inside.startsWith("..") || inside.startsWith("/")) {
 		return undefined;
 	}
+
 	const [container] = inside.split("/");
 	return container === undefined || container === ""
 		? undefined
@@ -232,70 +381,37 @@ export async function preparePublication(
 
 	for (const issue of discovery.issues) {
 		const container = sourceContainerForIssue(watchRoot, issue.path);
-		if (container !== undefined) incompleteContainers.add(container);
+
+		if (container !== undefined) {
+			incompleteContainers.add(container);
+		}
 	}
 
-	for (const container of discovery.candidates) {
-		for (const { candidate, reader } of await splitTagGroups(container)) {
-			const validation = await validateCandidate(candidate, reader);
-
-			if (!validation.valid) {
-				incompleteContainers.add(container.root);
-				candidates.push({
-					root: candidate.root,
-					status: "invalid",
-					issues: validation.issues,
-				});
-
-				continue;
-			}
-
-			const publication = planPublication(
-				validation.candidate,
-				generatedLibraryRoot,
-			);
-
-			if (!publication.valid) {
-				incompleteContainers.add(container.root);
-				candidates.push({
-					root: candidate.root,
-					status: "unplannable",
-					issues: publication.issues,
-				});
-
-				continue;
-			}
-
-			contenders.push({
-				root: candidate.root,
-				logicalReleaseKey: logicalReleaseKey(
-					validation.candidate.albumArtist,
-					validation.candidate.album,
-				),
-				albumArtist: validation.candidate.albumArtist,
-				albumTitle: validation.candidate.album,
-				entries: publication.entries,
-			});
-
-			candidates.push({
-				root: candidate.root,
-				status: "planned",
-				entries: publication.entries,
-				warnings: validation.warnings,
-			});
+	const preparedContainers = await mapBounded(
+		discovery.candidates,
+		(container) => prepareContainer(container, generatedLibraryRoot),
+		PREPARATION_CONCURRENCY,
+	);
+	for (const [index, prepared] of preparedContainers.entries()) {
+		candidates.push(...prepared.candidates);
+		contenders.push(...prepared.contenders);
+		if (prepared.incomplete) {
+			incompleteContainers.add(discovery.candidates[index].root);
 		}
 	}
 
 	const arbitration = arbitratePublicationContenders(contenders);
-	const suppressed = new Set(
-		arbitration.suppressed.map((contender) => contenderKey(contender)),
-	);
+	const suppressed = new Map<string, Set<string>>();
+	for (const contender of arbitration.suppressed) {
+		addContender(suppressed, contender);
+	}
 
-	const unresolved = new Set(
-		arbitration.unresolved.flatMap((collision) =>
-			collision.contenders.map((contender) => contenderKey(contender)),
-		),
-	);
+	const unresolved = new Map<string, Set<string>>();
+	for (const collision of arbitration.unresolved) {
+		for (const contender of collision.contenders) {
+			addContender(unresolved, contender);
+		}
+	}
 
 	for (const collision of arbitration.unresolved) {
 		for (const contender of collision.contenders) {
@@ -307,17 +423,16 @@ export async function preparePublication(
 		if (candidate.status !== "planned") {
 			return candidate;
 		}
-		
-		const key = contenderKey(candidate);
-		if (suppressed.has(key)) {
+
+		if (hasContender(suppressed, candidate)) {
 			return {
 				root: candidate.root,
 				status: "suppressed" as const,
 				reason: "PREFER_FLAC" as const,
 			};
 		}
-		
-		if (unresolved.has(key)) {
+
+		if (hasContender(unresolved, candidate)) {
 			return {
 				root: candidate.root,
 				status: "unplannable" as const,
@@ -343,7 +458,9 @@ export async function preparePublication(
 		discoveryIssues: discovery.issues,
 		candidates: finalCandidates,
 		plans: arbitration.plans,
-		incompleteSourceContainers: [...incompleteContainers].toSorted(compareText),
+		incompleteSourceContainers: [...incompleteContainers].toSorted(
+			compareText,
+		),
 		hasIssues,
 	};
 }
@@ -356,7 +473,11 @@ export async function prepareSourceContainer(
 ): Promise<
 	Readonly<{ plans: readonly PublicationInput[]; incomplete: boolean }>
 > {
-	if (container === "" || container.includes("/") || container.includes("\\")) {
+	if (
+		container === "" ||
+		container.includes("/") ||
+		container.includes("\\")
+	) {
 		throw new Error(`Invalid source container: ${container}`);
 	}
 
@@ -365,43 +486,17 @@ export async function prepareSourceContainer(
 		return { plans: [], incomplete: discovery.issues.length > 0 };
 	}
 
-	const contenders: PublicationContender[] = [];
-	let incomplete = discovery.issues.length > 0;
-	for (const { candidate, reader } of await splitTagGroups(
+	const prepared = await prepareContainer(
 		discovery.candidate,
-	)) {
-		const validation = await validateCandidate(candidate, reader);
-		if (!validation.valid) {
-			incomplete = true;
-			continue;
-		}
+		generatedLibraryRoot,
+	);
+	const arbitration = arbitratePublicationContenders(prepared.contenders);
 
-		const publication = planPublication(
-			validation.candidate,
-			generatedLibraryRoot,
-		);
-
-		if (!publication.valid) {
-			incomplete = true;
-			continue;
-		}
-		
-		contenders.push({
-			root: candidate.root,
-			logicalReleaseKey: logicalReleaseKey(
-				validation.candidate.albumArtist,
-				validation.candidate.album,
-			),
-			albumArtist: validation.candidate.albumArtist,
-			albumTitle: validation.candidate.album,
-			entries: publication.entries,
-		});
-	}
-
-	const arbitration = arbitratePublicationContenders(contenders);
-	
 	return {
 		plans: arbitration.plans,
-		incomplete: incomplete || arbitration.unresolved.length > 0,
+		incomplete:
+			discovery.issues.length > 0 ||
+			prepared.incomplete ||
+			arbitration.unresolved.length > 0,
 	};
 }

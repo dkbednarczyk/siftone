@@ -1,6 +1,6 @@
 # Siftone Monorepo
 
-Siftone is a Bun workspace with `server/`, `desktop/`, `cli/`, and `packages/contracts/`.
+Siftone is a Bun workspace with `server/`, `cli/`, and `packages/contracts/`.
 
 Read the global README.md for an understanding of the global project scope before continuing with any implementation.
 
@@ -11,13 +11,9 @@ Read the global README.md for an understanding of the global project scope befor
 - `packages/contracts/` contains only shared schemas/types; do not put platform adapters, filesystem access, database access, or business logic there.
 - Do not add playback, tag editing, Beets integration, or Electron APIs.
 
-## Desktop only
+## Pre-release evolution
 
-`desktop/` is an Electrobun + Svelte application. Electrobun is **not** Electron.
-
-- Main process imports from `electrobun/bun`.
-- Renderer imports from `electrobun/view`.
-- Bundled view URLs use `views://` and must be configured in `desktop/electrobun.config.ts`.
+Until Siftone has a real point release used beyond this repository, favor a better design over backward compatibility. State formats, database schemas, configuration, and internal contracts may change freely; do not add compatibility layers or migrations unless explicitly requested.
 
 ## Code Style
 
@@ -39,3 +35,7 @@ while (condition) {
     }
 }
 ```
+
+**Blocks of variable declarations require whitespace before/after them.**
+
+**Control flow keywords like `continue` or `return` always require a newline before them.**

@@ -39,9 +39,9 @@ describe("server command", () => {
 		expect(() =>
 			parseArguments(["--config", "one.toml", "--config", "two.toml"]),
 		).toThrow("--config may only be specified once");
-		expect(() => parseArguments(["--backup", "snapshot", "--dry-run"])).toThrow(
-			"cannot be used",
-		);
+		expect(() =>
+			parseArguments(["--backup", "snapshot", "--dry-run"]),
+		).toThrow("cannot be used");
 		expect(() => parseArguments(["--verbose"])).toThrow("unknown option");
 	});
 });

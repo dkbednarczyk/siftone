@@ -121,11 +121,15 @@ async function runServer(config: ServerConfig): Promise<void> {
 				watchRoot: config.paths.watchRoot,
 				containerPath: container,
 				inputs: targeted.plans,
-				incompleteSourceContainers: targeted.incomplete ? [container] : [],
+				incompleteSourceContainers: targeted.incomplete
+					? [container]
+					: [],
 			});
 		},
 		onLoss: (error) =>
-			state.markReconciliationRequired(`Watcher lost events: ${error.message}`),
+			state.markReconciliationRequired(
+				`Watcher lost events: ${error.message}`,
+			),
 	});
 
 	const server = createApp(() =>
@@ -148,7 +152,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 
 		await watcher.close();
 		await server.stop();
-		
+
 		state.close();
 	}
 
@@ -173,7 +177,7 @@ async function main(): Promise<void> {
 		if (await runDryRun(config)) {
 			process.exitCode = 1;
 		}
-		
+
 		return;
 	}
 
