@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { mapBounded } from "../util/util";
 import {
+	canonicalAbsolutePath,
 	canonicalRelativePath,
-	isCanonicalRelativePath,
+	isPathWithinRoot,
 } from "./canonical-path";
 import type { ImportState } from "./import-state";
 import {
@@ -25,14 +26,14 @@ const MISSING_GRACE_NS = 7n * 24n * 60n * 60n * 1_000_000_000n;
 const nowNs = (): bigint => BigInt(Date.now()) * 1_000_000n;
 
 function containerKey(watchRoot: string, path: string): string {
-	const normalized = path.replaceAll("\\", "/");
-	return isAbsolute(path)
-		? canonicalRelativePath(relative(watchRoot, path).replaceAll("\\", "/"))
-		: isCanonicalRelativePath(normalized)
-			? normalized
-			: canonicalRelativePath(
-					relative(watchRoot, path).replaceAll("\\", "/"),
-				);
+	const containerPath = canonicalAbsolutePath(
+		isAbsolute(path) ? path : join(watchRoot, path),
+	);
+	if (!isPathWithinRoot(watchRoot, containerPath)) {
+		throw new Error(`Source container escapes its watch root: ${path}`);
+	}
+
+	return containerPath;
 }
 
 type Existing = {
@@ -46,7 +47,7 @@ type Existing = {
 type StoredEntry = {
 	destination_name: string;
 	source_path: string;
-	relative_path: string;
+	root_path: string;
 	size: bigint;
 	mtime_ns: bigint;
 	kind: "audio" | "artwork";
@@ -116,28 +117,29 @@ function insertOrUpdateSourceFiles(
 	releaseId: string,
 	entries: readonly Entry[],
 ): void {
-	for (const entry of entries)
+	for (const entry of entries) {
 		state.database.run(
 			`
-		INSERT INTO source_files (source_path, source_release_id, relative_path, size, mtime_ns, kind)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(source_path) DO UPDATE SET source_release_id = excluded.source_release_id, relative_path = excluded.relative_path, size = excluded.size, mtime_ns = excluded.mtime_ns, kind = excluded.kind
+		INSERT INTO source_files (source_path, source_release_id, size, mtime_ns, kind)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(source_path) DO UPDATE SET source_release_id = excluded.source_release_id, size = excluded.size, mtime_ns = excluded.mtime_ns, kind = excluded.kind
 	`,
 			[
 				entry.sourcePath,
 				releaseId,
-				entry.relativeSourcePath,
 				entry.size,
 				entry.mtimeNs,
 				entry.kind,
 			],
 		);
+	}
 }
 
 function createOperation(
 	state: ImportState,
 	existing: Existing | null,
 	desired: Desired | undefined,
+	stagingRoot: string,
 	kind: OperationRow["kind"],
 	oldDestination: string | null,
 ): OperationRow {
@@ -205,14 +207,14 @@ function createOperation(
 		if (desired !== undefined)
 			insertOrUpdateSourceFiles(state, releaseId, desired.entries);
 		state.database.run(
-			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_name, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, NULL, ?, ?)",
+			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, NULL, ?, ?)",
 			[
 				id,
 				importId,
 				releaseId,
 				kind,
 				target,
-				`operation-${id}`,
+				join(stagingRoot, `operation-${id}`),
 				timestamp,
 				timestamp,
 			],
@@ -247,38 +249,52 @@ function createOperation(
 		kind,
 		phase: "planned",
 		target_destination_path: target,
-		staging_name: `operation-${id}`,
+		staging_path: join(stagingRoot, `operation-${id}`),
 	};
 }
 
-function storedEntriesToEntries(
-	watchRoot: string,
-	rows: readonly StoredEntry[],
-): Entry[] {
-	return rows.map((row) => ({
-		sourcePath: join(watchRoot, row.source_path),
-		relativeSourcePath: row.relative_path,
-		destinationName: row.destination_name,
-		size: row.size,
-		mtimeNs: row.mtime_ns,
-		kind: row.kind,
-	}));
+function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
+	return rows.map((row) => {
+		const sourcePath = canonicalAbsolutePath(row.source_path);
+		const rootPath = canonicalAbsolutePath(row.root_path);
+		if (
+			!isPathWithinRoot(rootPath, sourcePath) ||
+			sourcePath === rootPath
+		) {
+			throw new Error(
+				`Stored source file escapes its container: ${sourcePath}`,
+			);
+		}
+
+		const relativeSourcePath = canonicalRelativePath(
+			sourcePath.slice(rootPath === "/" ? 1 : rootPath.length + 1),
+		);
+
+		return {
+			sourcePath,
+			relativeSourcePath,
+			destinationName: row.destination_name,
+			size: row.size,
+			mtimeNs: row.mtime_ns,
+			kind: row.kind,
+		};
+	});
 }
 
-function operationEntries(
-	state: ImportState,
-	operationId: string,
-	watchRoot: string,
-): Entry[] {
+function operationEntries(state: ImportState, operationId: string): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT oe.destination_name, oe.source_path, sf.relative_path, oe.size, oe.mtime_ns, oe.kind
-		FROM operation_entries oe JOIN source_files sf ON sf.source_path = oe.source_path
+		SELECT oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.kind
+		FROM operation_entries oe
+		JOIN source_files sf ON sf.source_path = oe.source_path
+		JOIN source_releases sr ON sr.id = sf.source_release_id
+		JOIN source_containers sc ON sc.id = sr.container_id
 		WHERE oe.operation_id = ? ORDER BY oe.destination_name
 	`),
 		operationId,
 	);
-	return storedEntriesToEntries(watchRoot, rows);
+
+	return storedEntriesToEntries(rows);
 }
 
 async function stage(entries: readonly Entry[], path: string): Promise<void> {
@@ -330,20 +346,21 @@ function priorDestination(state: ImportState, importId: string): string | null {
 	);
 }
 
-function destinationEntries(
-	state: ImportState,
-	importId: string,
-	watchRoot: string,
-): Entry[] {
+function destinationEntries(state: ImportState, importId: string): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT de.destination_name, de.source_path, sf.relative_path, de.size, de.mtime_ns, de.kind
-		FROM destination_entries de JOIN published_destinations pd ON pd.id = de.destination_id
-		JOIN source_files sf ON sf.source_path = de.source_path WHERE pd.import_id = ? ORDER BY de.destination_name
+		SELECT de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.kind
+		FROM destination_entries de
+		JOIN published_destinations pd ON pd.id = de.destination_id
+		JOIN source_files sf ON sf.source_path = de.source_path
+		JOIN source_releases sr ON sr.id = sf.source_release_id
+		JOIN source_containers sc ON sc.id = sr.container_id
+		WHERE pd.import_id = ? ORDER BY de.destination_name
 	`),
 		importId,
 	);
-	return storedEntriesToEntries(watchRoot, rows);
+
+	return storedEntriesToEntries(rows);
 }
 
 type CurrentImport = Readonly<{
@@ -459,14 +476,13 @@ async function executeOperation(
 	state: ImportState,
 	generatedLibraryRoot: string,
 	stagingRoot: string,
-	watchRoot: string,
 	operation: OperationRow,
 ): Promise<void> {
-	const entries = operationEntries(state, operation.id, watchRoot);
+	const entries = operationEntries(state, operation.id);
 	const paths = operationPaths(
 		generatedLibraryRoot,
 		stagingRoot,
-		operation.staging_name,
+		operation.staging_path,
 		operation.target_destination_path,
 		operation.id,
 	);
@@ -477,7 +493,7 @@ async function executeOperation(
 			: operationPaths(
 					generatedLibraryRoot,
 					stagingRoot,
-					operation.staging_name,
+					operation.staging_path,
 					oldPath,
 					operation.id,
 				).destination;
@@ -516,11 +532,7 @@ async function executeOperation(
 				generatedLibraryRoot,
 				paths.tombstone,
 			);
-			const oldEntries = destinationEntries(
-				state,
-				operation.import_id,
-				watchRoot,
-			);
+			const oldEntries = destinationEntries(state, operation.import_id);
 			if (
 				operation.kind !== "repair" &&
 				operation.kind !== "delete" &&
@@ -605,18 +617,16 @@ export async function recoverInterruptedOperations({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
-	watchRoot,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
-	watchRoot: string;
 }>): Promise<void> {
 	await ensurePublicationRoots(generatedLibraryRoot, stagingRoot);
 
 	const operations = state.database
 		.query<OperationRow, []>(
-			"SELECT id, import_id, source_release_id, kind, phase, target_destination_path, staging_name FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
+			"SELECT id, import_id, source_release_id, kind, phase, target_destination_path, staging_path FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
 		)
 		.all();
 
@@ -627,7 +637,6 @@ export async function recoverInterruptedOperations({
 				state,
 				generatedLibraryRoot,
 				stagingRoot,
-				watchRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,
@@ -689,7 +698,9 @@ export async function reconcileImports({
 		}
 
 		if (existing === null) {
-			scheduled.push(createOperation(state, null, item, "add", null));
+			scheduled.push(
+				createOperation(state, null, item, stagingRoot, "add", null),
+			);
 		} else if (
 			existing.destination_path !== item.destinationPath ||
 			existing.manifest_hash !== item.manifestHash
@@ -699,6 +710,7 @@ export async function reconcileImports({
 					state,
 					existing,
 					item,
+					stagingRoot,
 					"replace",
 					existing.destination_path,
 				),
@@ -706,7 +718,7 @@ export async function reconcileImports({
 		} else if (
 			!(await entriesMatch(
 				item.destination,
-				destinationEntries(state, existing.import_id, watchRoot),
+				destinationEntries(state, existing.import_id),
 			))
 		) {
 			scheduled.push(
@@ -714,6 +726,7 @@ export async function reconcileImports({
 					state,
 					existing,
 					item,
+					stagingRoot,
 					"repair",
 					existing.destination_path,
 				),
@@ -800,6 +813,7 @@ export async function reconcileImports({
 							release_availability: "missing",
 						},
 						undefined,
+						stagingRoot,
 						"delete",
 						row.destination_path,
 					),
@@ -821,7 +835,6 @@ export async function reconcileImports({
 				state,
 				generatedLibraryRoot,
 				stagingRoot,
-				watchRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,

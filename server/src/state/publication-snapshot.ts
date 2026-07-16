@@ -3,7 +3,12 @@ import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, dirname, extname, join, relative } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { mapBounded } from "../util/util";
-import { canonicalRelativePath } from "./canonical-path";
+import {
+	canonicalAbsolutePath,
+	canonicalRelativePath,
+	isPathBelowRoot,
+	isPathWithinRoot,
+} from "./canonical-path";
 import type { Desired, Entry } from "./reconcile-types";
 
 const SOURCE_STAT_CONCURRENCY = 8;
@@ -35,21 +40,34 @@ export async function desiredFor(
 	generatedLibraryRoot: string,
 	input: PublicationInput,
 ): Promise<Desired> {
-	const destination = dirname(input.entries[0]?.destinationPath ?? "");
-	const destinationPath = canonicalRelativePath(
-		relative(generatedLibraryRoot, destination).replaceAll("\\", "/"),
+	const destination = canonicalAbsolutePath(
+		dirname(input.entries[0]?.destinationPath ?? ""),
 	);
-	const containerPath = canonicalRelativePath(
-		relative(watchRoot, input.root).replaceAll("\\", "/"),
-	);
+	const destinationPath = destination;
+	const containerPath = canonicalAbsolutePath(input.root);
+	if (!isPathBelowRoot(generatedLibraryRoot, destinationPath)) {
+		throw new Error(
+			`Generated destination escapes its root: ${destination}`,
+		);
+	}
+
+	if (!isPathBelowRoot(watchRoot, containerPath)) {
+		throw new Error(
+			`Source container escapes its watch root: ${input.root}`,
+		);
+	}
 	const entries = await mapBounded(
 		input.entries,
 		async (entry) => {
+			const sourcePath = canonicalAbsolutePath(entry.sourcePath);
+			if (!isPathWithinRoot(containerPath, sourcePath)) {
+				throw new Error(
+					`Source file escapes its container: ${entry.sourcePath}`,
+				);
+			}
+
 			const relativeSourcePath = canonicalRelativePath(
-				relative(input.root, entry.sourcePath).replaceAll("\\", "/"),
-			);
-			const sourcePath = canonicalRelativePath(
-				relative(watchRoot, entry.sourcePath).replaceAll("\\", "/"),
+				relative(containerPath, sourcePath).replaceAll("\\", "/"),
 			);
 			const destinationName = basename(entry.destinationPath);
 			if (

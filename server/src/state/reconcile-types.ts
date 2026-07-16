@@ -26,5 +26,5 @@ export type OperationRow = {
 	kind: "add" | "replace" | "delete" | "repair";
 	phase: ImportOperationPhase;
 	target_destination_path: string;
-	staging_name: string;
+	staging_path: string;
 };

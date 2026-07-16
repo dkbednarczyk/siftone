@@ -174,11 +174,11 @@ M3U, and rip logs are never published or trusted as metadata.
   frozen operations, and FK-owned reviews. It uses `STRICT` tables, WAL, foreign
   keys, a busy timeout, and `synchronous=NORMAL`; it has no migration or
   compatibility path.
-- Source paths and generated paths are canonical `/`-separated relative paths,
-  `BINARY`-compared by SQLite, and are rejected when absolute, traversing, empty,
-  or backslash-separated. Source-file lookup is the `source_files.source_path`
-  primary key; normal fingerprints are `size + mtime_ns` stored as SQLite
-  integers/JavaScript `bigint`.
+- Source paths, generated paths, and operation staging paths are canonical
+  absolute `/`-separated paths, `BINARY`-compared by SQLite, and are rejected
+  when relative, traversing, empty, or backslash-separated. Source-file lookup
+  is the `source_files.source_path` primary key; normal fingerprints are
+  `size + mtime_ns` stored as SQLite integers/JavaScript `bigint`.
 - Every unresolved operation owns one import/source release and claims every
   old/new destination path. Its filesystem checkpoint is only a recovery hint:
   restart inspects staging, destination, and tombstone state before resuming

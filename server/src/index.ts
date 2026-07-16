@@ -73,7 +73,6 @@ async function runServer(config: ServerConfig): Promise<void> {
 		state,
 		generatedLibraryRoot: config.paths.generatedLibraryRoot,
 		stagingRoot: config.paths.stagingRoot,
-		watchRoot: config.paths.watchRoot,
 	});
 
 	const prepared = await preparePublication(

@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import type { PublicationInput } from "../publication/publish";
-import { isCanonicalRelativePath } from "./canonical-path";
+import { canonicalAbsolutePath, isPathBelowRoot } from "./canonical-path";
 import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 
 export { DATABASE_FILE } from "./schema";
@@ -148,13 +148,11 @@ export async function openImportState({
 					continue;
 				}
 
-				const destination = dirname(entry.destinationPath);
-				const path = relative(
-					generatedLibraryRoot,
-					destination,
-				).replaceAll("\\", "/");
+				const destination = canonicalAbsolutePath(
+					dirname(entry.destinationPath),
+				);
 
-				if (!isCanonicalRelativePath(path)) {
+				if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
 					throw new ImportStateError(
 						`Unsafe generated destination: ${destination}`,
 					);
@@ -164,7 +162,7 @@ export async function openImportState({
 					.query<{ id: string }, [string]>(
 						"SELECT id FROM published_destinations WHERE destination_path = ?",
 					)
-					.get(path);
+					.get(destination);
 
 				if (known === null && existsSync(destination)) {
 					throw new ImportStateError(

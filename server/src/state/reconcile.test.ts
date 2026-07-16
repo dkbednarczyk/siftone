@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { openImportState } from "./import-state";
+import { desiredFor } from "./publication-snapshot";
 import { reconcileImports, recoverInterruptedOperations } from "./reconcile";
 
 const roots: string[] = [];
@@ -58,6 +59,27 @@ async function fixture() {
 }
 
 describe("reconciliation", () => {
+	test("rejects publication roots as persisted container or destination paths", async () => {
+		const paths = await fixture();
+		await expect(
+			desiredFor(paths.watchRoot, paths.generated, {
+				...paths.input,
+				root: paths.watchRoot,
+			}),
+		).rejects.toThrow("Source container escapes its watch root");
+		await expect(
+			desiredFor(paths.watchRoot, paths.generated, {
+				...paths.input,
+				entries: [
+					{
+						sourcePath: paths.source,
+						destinationPath: join(paths.generated, "01.flac"),
+					},
+				],
+			}),
+		).rejects.toThrow("Generated destination escapes its root");
+	});
+
 	test("publishes an indexed manifest and treats unchanged fingerprints as no work", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -76,11 +98,21 @@ describe("reconciliation", () => {
 		expect(await readlink(paths.destination)).toBe(paths.source);
 		expect(
 			state.database
-				.query<{ n: number }, []>(
-					"SELECT count(*) n FROM source_files WHERE source_path = 'Album/01.flac'",
+				.query<{ source_path: string }, []>(
+					"SELECT source_path FROM source_files",
 				)
-				.get()?.n,
-		).toBe(1);
+				.get()?.source_path,
+		).toBe(paths.source);
+		const storedPaths = state.database
+			.query<{ path: string }, []>(`
+				SELECT root_path AS path FROM source_containers
+				UNION ALL SELECT source_path FROM source_files
+				UNION ALL SELECT destination_path FROM published_destinations
+				UNION ALL SELECT source_path FROM destination_entries
+			`)
+			.all()
+			.map((row) => row.path);
+		expect(storedPaths.every((path) => path.startsWith("/"))).toBe(true);
 		const changesBeforeUnchangedReconcile = state.database
 			.query<{ changes: number }, []>("SELECT total_changes() AS changes")
 			.get()?.changes;
@@ -182,7 +214,6 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
-			watchRoot: paths.watchRoot,
 		});
 		expect(
 			state.database
@@ -211,7 +242,6 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
-			watchRoot: paths.watchRoot,
 		});
 		expect((await lstat(paths.destination)).isSymbolicLink()).toBe(true);
 		state.close();

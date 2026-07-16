@@ -1,9 +1,6 @@
 import { lstat, mkdir, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import {
-	canonicalPathFromRelative,
-	canonicalRelativePath,
-} from "./canonical-path";
+import { canonicalAbsolutePath, isPathBelowRoot } from "./canonical-path";
 
 export class InvalidOperationState extends Error {}
 
@@ -68,24 +65,26 @@ export async function ensureDestinationParent(
 export function operationPaths(
 	generatedLibraryRoot: string,
 	stagingRoot: string,
-	stagingName: string,
+	stagingPath: string,
 	destinationPath: string,
 	operationId: string,
 ) {
-	canonicalRelativePath(stagingName);
-	if (stagingName.includes("/"))
+	const destination = canonicalAbsolutePath(destinationPath);
+	const staging = canonicalAbsolutePath(stagingPath);
+	if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
 		throw new InvalidOperationState(
-			"Staging name must be one path segment",
+			"Destination escapes generated-library root",
 		);
-	const canonicalDestination = canonicalRelativePath(destinationPath);
-	const destination = join(
-		generatedLibraryRoot,
-		canonicalPathFromRelative(canonicalDestination),
-	);
-	const staging = join(stagingRoot, stagingName);
+	}
+
+	if (!isPathBelowRoot(stagingRoot, staging)) {
+		throw new InvalidOperationState("Staging path escapes staging root");
+	}
+
 	const tombstone = join(
 		dirname(destination),
 		`.siftone-tombstone-${operationId}`,
 	);
+
 	return { destination, staging, tombstone };
 }

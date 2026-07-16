@@ -61,7 +61,7 @@ describe("SQLite library-state backups", () => {
 			generatedLibraryRoot: paths.generated,
 		});
 		state.database.run(
-			"INSERT INTO source_containers VALUES (?, 'Album', 'present', NULL, 1)",
+			"INSERT INTO source_containers VALUES (?, '/watch/Album', 'present', NULL, 1)",
 			["11111111-1111-4111-8111-111111111111"],
 		);
 		const backupPath = await createDailyBackup(

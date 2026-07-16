@@ -168,7 +168,7 @@ The schema in `state/schema.ts` records:
 | `operations`, claims, and entries | A durable checkpoint for add/replace/delete/repair across a crash. |
 | `reviews` and `reconciliation_state` | Conditions that need attention and whether observation is trustworthy enough to reconcile. |
 
-Persisted paths use canonical POSIX-relative form, enforced both by
+Persisted filesystem paths use canonical POSIX absolute form, enforced both by
 `state/canonical-path.ts` and SQLite constraints. This prevents traversal,
 platform separator ambiguity, and unsafe reconstruction of filesystem paths.
 

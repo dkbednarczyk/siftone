@@ -2,15 +2,26 @@ export const DATABASE_FILE = "library-state.sqlite";
 export const APPLICATION_ID = 1397577798;
 
 // SQLite has no regex CHECK. This deliberately verbose predicate is kept next to
-// the schema; canonicalRelativePath applies the identical rule at the boundary.
-const CANONICAL_PATH_CHECK = `
+// the schema; canonicalAbsolutePath applies the identical rule at the boundary.
+const CANONICAL_ABSOLUTE_PATH_CHECK = `
+	? <> '' AND instr(?, '\\') = 0 AND ? GLOB '/*' AND
+	(? = '/' OR (
+		? NOT GLOB '*/' AND instr(?, '//') = 0 AND instr(?, '/./') = 0 AND instr(?, '/../') = 0 AND
+		? NOT GLOB '*/.' AND ? NOT GLOB '*/..'
+	))`;
+
+const CANONICAL_NAME_CHECK = `
 	? <> '' AND instr(?, '\\') = 0 AND ? NOT GLOB '/*' AND
 	? NOT IN ('.', '..') AND ? NOT GLOB '../*' AND ? NOT GLOB './*' AND
 	? NOT GLOB '*/' AND instr(?, '//') = 0 AND instr(?, '/./') = 0 AND instr(?, '/../') = 0 AND
 	? NOT GLOB '*/.' AND ? NOT GLOB '*/..'`;
 
-function pathCheck(column: string): string {
-	return CANONICAL_PATH_CHECK.replaceAll("?", column);
+function absolutePathCheck(column: string): string {
+	return CANONICAL_ABSOLUTE_PATH_CHECK.replaceAll("?", column);
+}
+
+function nameCheck(column: string): string {
+	return CANONICAL_NAME_CHECK.replaceAll("?", column);
 }
 
 const UUID_CHECK = `id GLOB '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-4[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[89ABab][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'`;
@@ -18,7 +29,7 @@ const UUID_CHECK = `id GLOB '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-F
 export const SCHEMA_SQL = `
 	CREATE TABLE source_containers (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
-		root_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${pathCheck("root_path")}),
+		root_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${absolutePathCheck("root_path")}),
 		availability TEXT NOT NULL DEFAULT 'present' CHECK (availability IN ('present', 'missing', 'inaccessible')),
 		missing_since_ns INTEGER,
 		updated_at_ns INTEGER NOT NULL
@@ -35,13 +46,11 @@ export const SCHEMA_SQL = `
 		UNIQUE (container_id, logical_release_key)
 	) STRICT;
 	CREATE TABLE source_files (
-		source_path TEXT PRIMARY KEY COLLATE BINARY CHECK (${pathCheck("source_path")}),
+		source_path TEXT PRIMARY KEY COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
 		source_release_id TEXT NOT NULL REFERENCES source_releases(id) ON DELETE CASCADE,
-		relative_path TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("relative_path")}),
 		size INTEGER NOT NULL CHECK (size >= 0),
 		mtime_ns INTEGER NOT NULL,
-		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
-		UNIQUE (source_release_id, relative_path)
+		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork'))
 	) STRICT, WITHOUT ROWID;
 	CREATE INDEX source_files_release_idx ON source_files(source_release_id);
 	CREATE TABLE imports (
@@ -54,13 +63,13 @@ export const SCHEMA_SQL = `
 	CREATE TABLE published_destinations (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT NOT NULL UNIQUE REFERENCES imports(id) ON DELETE CASCADE,
-		destination_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${pathCheck("destination_path")}),
+		destination_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${absolutePathCheck("destination_path")}),
 		published_at_ns INTEGER NOT NULL
 	) STRICT;
 	CREATE TABLE destination_entries (
 		destination_id TEXT NOT NULL REFERENCES published_destinations(id) ON DELETE CASCADE,
-		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("destination_name")} AND instr(destination_name, '/') = 0),
-		source_path TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("source_path")}),
+		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${nameCheck("destination_name")} AND instr(destination_name, '/') = 0),
+		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
 		size INTEGER NOT NULL CHECK (size >= 0),
 		mtime_ns INTEGER NOT NULL,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
@@ -72,8 +81,8 @@ export const SCHEMA_SQL = `
 		source_release_id TEXT NOT NULL REFERENCES source_releases(id) ON DELETE CASCADE,
 		kind TEXT NOT NULL CHECK (kind IN ('add', 'replace', 'delete', 'repair')),
 		phase TEXT NOT NULL CHECK (phase IN ('planned', 'staged', 'tombstoned', 'published', 'attention_required')),
-		target_destination_path TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("target_destination_path")}),
-		staging_name TEXT NOT NULL CHECK (${pathCheck("staging_name")} AND instr(staging_name, '/') = 0),
+		target_destination_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("target_destination_path")}),
+		staging_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("staging_path")}),
 		error_message TEXT,
 		created_at_ns INTEGER NOT NULL,
 		updated_at_ns INTEGER NOT NULL,
@@ -82,13 +91,13 @@ export const SCHEMA_SQL = `
 	) STRICT;
 	CREATE TABLE operation_destination_claims (
 		operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-		destination_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${pathCheck("destination_path")}),
+		destination_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${absolutePathCheck("destination_path")}),
 		PRIMARY KEY (operation_id, destination_path)
 	) STRICT, WITHOUT ROWID;
 	CREATE TABLE operation_entries (
 		operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("destination_name")} AND instr(destination_name, '/') = 0),
-		source_path TEXT NOT NULL COLLATE BINARY CHECK (${pathCheck("source_path")}),
+		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${nameCheck("destination_name")} AND instr(destination_name, '/') = 0),
+		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
 		size INTEGER NOT NULL CHECK (size >= 0),
 		mtime_ns INTEGER NOT NULL,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),

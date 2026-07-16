@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalRelativePath } from "./canonical-path";
+import { canonicalAbsolutePath, canonicalRelativePath } from "./canonical-path";
 import { DATABASE_FILE, openImportState } from "./import-state";
 
 const roots: string[] = [];
@@ -22,6 +23,11 @@ async function fixture() {
 	await Promise.all([mkdir(state), mkdir(generated)]);
 	return { root, state, generated };
 }
+const containerPath = "/watch/Album";
+const sourcePath = "/watch/Album/01.flac";
+const destinationPath = "/generated/Artist/Album";
+const stagingPath = "/staging/op";
+
 const ids = [
 	"11111111-1111-4111-8111-111111111111",
 	"22222222-2222-4222-8222-222222222222",
@@ -32,16 +38,16 @@ const ids = [
 
 function seed(state: Awaited<ReturnType<typeof openImportState>>) {
 	state.database.run(
-		"INSERT INTO source_containers VALUES (?, 'Album', 'present', NULL, 1)",
-		[ids[0]],
+		"INSERT INTO source_containers VALUES (?, ?, 'present', NULL, 1)",
+		[ids[0], containerPath],
 	);
 	state.database.run(
 		"INSERT INTO source_releases (id, container_id, logical_release_key, album_artist, album_title) VALUES (?, ?, 'key', 'Artist', 'Album')",
 		[ids[1], ids[0]],
 	);
 	state.database.run(
-		"INSERT INTO source_files VALUES ('Album/01.flac', ?, '01.flac', ?, ?, 'audio')",
-		[ids[1], 42n, 1234567890123456789n],
+		"INSERT INTO source_files VALUES (?, ?, ?, ?, 'audio')",
+		[sourcePath, ids[1], 42n, 1234567890123456789n],
 	);
 	state.database.run("INSERT INTO imports VALUES (?, ?, ?, 1, 1)", [
 		ids[2],
@@ -49,10 +55,26 @@ function seed(state: Awaited<ReturnType<typeof openImportState>>) {
 		"a".repeat(64),
 	]);
 	state.database.run(
-		"INSERT INTO published_destinations VALUES (?, ?, 'Artist/Album', 1)",
-		[ids[3], ids[2]],
+		"INSERT INTO published_destinations VALUES (?, ?, ?, 1)",
+		[ids[3], ids[2], destinationPath],
 	);
 	return ids[2];
+}
+
+function insertImport(state: Awaited<ReturnType<typeof openImportState>>) {
+	const releaseId = randomUUID();
+	const importId = randomUUID();
+	state.database.run(
+		"INSERT INTO source_releases (id, container_id, logical_release_key, album_artist, album_title) VALUES (?, ?, ?, 'Artist', 'Album')",
+		[releaseId, ids[0], randomUUID()],
+	);
+	state.database.run("INSERT INTO imports VALUES (?, ?, ?, 1, 1)", [
+		importId,
+		releaseId,
+		"a".repeat(64),
+	]);
+
+	return { releaseId, importId };
 }
 
 describe("library state", () => {
@@ -83,7 +105,7 @@ describe("library state", () => {
 		expect(state.isDegraded()).toBe(true);
 		state.close();
 	});
-	test("rejects noncanonical paths", () => {
+	test("validates transient relative paths and persisted absolute paths", () => {
 		for (const path of [
 			"/x",
 			"./x",
@@ -97,7 +119,109 @@ describe("library state", () => {
 		])
 			expect(() => canonicalRelativePath(path)).toThrow();
 		expect(canonicalRelativePath("A/B.flac")).toBe("A/B.flac");
+		for (const path of [
+			"",
+			"relative",
+			"/trailing/",
+			"/double//slash",
+			"/dot/./segment",
+			"/parent/../segment",
+			"/back\\slash",
+		]) {
+			expect(() => canonicalAbsolutePath(path)).toThrow();
+		}
+		expect(canonicalAbsolutePath("/watch/Album/01.flac")).toBe(
+			"/watch/Album/01.flac",
+		);
 	});
+	test("rejects relative values in every persisted filesystem path column", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		expect(() =>
+			state.database.run(
+				"INSERT INTO source_containers VALUES (?, 'Album', 'present', NULL, 1)",
+				[ids[0]],
+			),
+		).toThrow();
+		seed(state);
+		expect(() =>
+			state.database.run(
+				"INSERT INTO source_files VALUES ('relative.flac', ?, 42, 1, 'audio')",
+				[ids[1]],
+			),
+		).toThrow();
+		const destinationImport = insertImport(state);
+		expect(() =>
+			state.database.run(
+				"INSERT INTO published_destinations VALUES (?, ?, 'Artist/Album', 1)",
+				[randomUUID(), destinationImport.importId],
+			),
+		).toThrow();
+		expect(() =>
+			state.database.run(
+				"INSERT INTO destination_entries VALUES (?, '02.flac', 'relative.flac', 42, 1, 'audio')",
+				[ids[3]],
+			),
+		).toThrow();
+		const targetImport = insertImport(state);
+		expect(() =>
+			state.database.run(
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Album', ?, NULL, 1, 1)",
+				[randomUUID(), targetImport.importId, targetImport.releaseId, stagingPath],
+			),
+		).toThrow();
+		const stagingImport = insertImport(state);
+		expect(() =>
+			state.database.run(
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, 'operation', NULL, 1, 1)",
+				[
+					randomUUID(),
+					stagingImport.importId,
+					stagingImport.releaseId,
+					destinationPath,
+				],
+			),
+		).toThrow();
+		const operationImport = insertImport(state);
+		const operationId = randomUUID();
+		state.database.run(
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			[
+				operationId,
+				operationImport.importId,
+				operationImport.releaseId,
+				destinationPath,
+				stagingPath,
+			],
+		);
+		expect(() =>
+			state.database.run(
+				"INSERT INTO operation_destination_claims VALUES (?, 'Artist/Album')",
+				[operationId],
+			),
+		).toThrow();
+		expect(() =>
+			state.database.run(
+				"INSERT INTO operation_entries VALUES (?, '02.flac', 'relative.flac', 42, 1, 'audio')",
+				[operationId],
+			),
+		).toThrow();
+		const sourceFileColumns = state.database
+			.query<{ name: string }, []>("PRAGMA table_info(source_files)")
+			.all()
+			.map((column) => column.name);
+		expect(sourceFileColumns).not.toContain("relative_path");
+		const operationColumns = state.database
+			.query<{ name: string }, []>("PRAGMA table_info(operations)")
+			.all()
+			.map((column) => column.name);
+		expect(operationColumns).not.toContain("staging_name");
+		state.close();
+	});
+
 	test("keeps frozen published and operation snapshots after source removal", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -106,30 +230,30 @@ describe("library state", () => {
 		});
 		seed(state);
 		state.database.run(
-			"INSERT INTO destination_entries VALUES (?, '01.flac', 'Album/01.flac', 42, 1, 'audio')",
-			[ids[3]],
+			"INSERT INTO destination_entries VALUES (?, '01.flac', ?, 42, 1, 'audio')",
+			[ids[3], sourcePath],
 		);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'replace', 'planned', 'Artist/Album', 'op', NULL, 1, 1)",
-			[ids[4], ids[2], ids[1]],
+			"INSERT INTO operations VALUES (?, ?, ?, 'replace', 'planned', ?, ?, NULL, 1, 1)",
+			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
 		);
 		state.database.run(
-			"INSERT INTO operation_entries VALUES (?, '01.flac', 'Album/01.flac', 42, 1, 'audio')",
-			[ids[4]],
+			"INSERT INTO operation_entries VALUES (?, '01.flac', ?, 42, 1, 'audio')",
+			[ids[4], sourcePath],
 		);
 		expect(() =>
 			state.database.run(
-				"DELETE FROM source_files WHERE source_path = 'Album/01.flac'",
+				"DELETE FROM source_files WHERE source_path = '/watch/Album/01.flac'",
 			),
 		).not.toThrow();
 		expect(
 			state.database.run(
-				"DELETE FROM destination_entries WHERE source_path = 'Album/01.flac'",
+				"DELETE FROM destination_entries WHERE source_path = '/watch/Album/01.flac'",
 			).changes,
 		).toBe(1);
 		expect(
 			state.database.run(
-				"DELETE FROM operation_entries WHERE source_path = 'Album/01.flac'",
+				"DELETE FROM operation_entries WHERE source_path = '/watch/Album/01.flac'",
 			).changes,
 		).toBe(1);
 		state.close();
@@ -144,8 +268,12 @@ describe("library state", () => {
 		const importId = seed(state);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO published_destinations VALUES (?, ?, 'Artist/Album', 1)",
-				["55555555-5555-4555-8555-555555555555", importId],
+				"INSERT INTO published_destinations VALUES (?, ?, ?, 1)",
+				[
+					"55555555-5555-4555-8555-555555555555",
+					importId,
+					destinationPath,
+				],
 			),
 		).toThrow();
 		state.database.run("DELETE FROM imports WHERE id = ?", [importId]);
@@ -196,7 +324,7 @@ describe("library state", () => {
 				JOIN source_releases sr ON sr.container_id = sc.id
 				JOIN imports i ON i.source_release_id = sr.id
 			`)
-			.all(JSON.stringify(["Album"]))
+			.all(JSON.stringify([containerPath]))
 			.map((row) => row.detail);
 		expect(
 			details.some((detail) => detail.includes("SEARCH sc USING INDEX")),
@@ -215,23 +343,35 @@ describe("library state", () => {
 		});
 		const importId = seed(state);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Album', 'operation-a', NULL, 1, 1)",
-			["55555555-5555-4555-8555-555555555555", importId, ids[1]],
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			[
+				"55555555-5555-4555-8555-555555555555",
+				importId,
+				ids[1],
+				destinationPath,
+				stagingPath,
+			],
 		);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Other', 'operation-b', NULL, 1, 1)",
-				["66666666-6666-4666-8666-666666666666", importId, ids[1]],
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+				[
+					"66666666-6666-4666-8666-666666666666",
+					importId,
+					ids[1],
+					"/generated/Artist/Other",
+					"/staging/operation-b",
+				],
 			),
 		).toThrow();
 		state.database.run(
-			"INSERT INTO operation_destination_claims VALUES (?, 'Artist/Album')",
-			["55555555-5555-4555-8555-555555555555"],
+			"INSERT INTO operation_destination_claims VALUES (?, ?)",
+			["55555555-5555-4555-8555-555555555555", destinationPath],
 		);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operation_destination_claims VALUES (?, 'Artist/Album')",
-				["77777777-7777-4777-8777-777777777777"],
+				"INSERT INTO operation_destination_claims VALUES (?, ?)",
+				["77777777-7777-4777-8777-777777777777", destinationPath],
 			),
 		).toThrow();
 		state.close();
