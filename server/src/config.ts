@@ -28,7 +28,6 @@ export type ServerConfig = Readonly<{
 export type ConfigLoadOptions = Readonly<{
 	configPath?: string;
 	cwd?: string;
-	executablePath?: string;
 	homeDirectory?: string;
 }>;
 
@@ -70,13 +69,8 @@ type TomlConfig = z.infer<typeof TomlConfigSchema>;
 export function resolveConfigPath({
 	configPath,
 	cwd = process.cwd(),
-	executablePath = process.execPath,
 }: ConfigLoadOptions = {}): string {
-	if (configPath !== undefined) {
-		return resolve(cwd, configPath);
-	}
-
-	return join(dirname(executablePath), "config.toml");
+	return resolve(cwd, configPath ?? "config.toml");
 }
 
 function validateAbsolutePath(value: string, field: PathField[0]): string {
@@ -252,8 +246,7 @@ async function parsePaths(
 export async function loadServerConfig(
 	options: ConfigLoadOptions = {},
 ): Promise<ServerConfig> {
-	const executablePath = options.executablePath ?? process.execPath;
-	const configPath = resolveConfigPath({ ...options, executablePath });
+	const configPath = resolveConfigPath(options);
 
 	let contents: string;
 

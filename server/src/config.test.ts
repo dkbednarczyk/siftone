@@ -9,7 +9,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { loadServerConfig, resolveConfigPath } from "./config";
 
 const temporaryDirectories: string[] = [];
@@ -53,7 +53,6 @@ async function writeConfig(
 function loadExplicitConfig(configPath: string) {
 	return loadServerConfig({
 		configPath,
-		executablePath: join(dirname(configPath), "siftone"),
 		homeDirectory: defaultHomeDirectory,
 	});
 }
@@ -83,17 +82,16 @@ describe("server configuration", () => {
 		).toBe("/workspace/settings/server.toml");
 	});
 
-	test("uses config.toml beside the executable when --config is absent", async () => {
+	test("uses config.toml in the working directory when --config is absent", async () => {
 		const directory = await makeTemporaryDirectory();
-		const executablePath = join(directory, "siftone");
 		await writeConfig(directory);
 
-		expect(resolveConfigPath({ executablePath })).toBe(
+		expect(resolveConfigPath({ cwd: directory })).toBe(
 			join(directory, "config.toml"),
 		);
 		await expect(
 			loadServerConfig({
-				executablePath,
+				cwd: directory,
 				homeDirectory: defaultHomeDirectory,
 			}),
 		).resolves.toMatchObject({
@@ -103,13 +101,11 @@ describe("server configuration", () => {
 	});
 
 	test("defaults managed storage under the user Siftone directory", async () => {
-		const executableDirectory = await makeTemporaryDirectory();
 		const configDirectory = await makeTemporaryDirectory();
 		const configPath = await writeConfig(configDirectory);
 
 		const config = await loadServerConfig({
 			configPath,
-			executablePath: join(executableDirectory, "siftone"),
 			homeDirectory: defaultHomeDirectory,
 		});
 
@@ -166,11 +162,7 @@ describe("server configuration", () => {
 		await expect(loadExplicitConfig(missingPath)).rejects.toThrow(
 			`Cannot read configuration file ${missingPath}`,
 		);
-		await expect(
-			loadServerConfig({
-				executablePath: join(directory, "siftone"),
-			}),
-		).rejects.toThrow(
+		await expect(loadServerConfig({ cwd: directory })).rejects.toThrow(
 			`Cannot read configuration file ${join(directory, "config.toml")}`,
 		);
 	});

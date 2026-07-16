@@ -170,7 +170,12 @@ describe("library state", () => {
 		expect(() =>
 			state.database.run(
 				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Album', ?, NULL, 1, 1)",
-				[randomUUID(), targetImport.importId, targetImport.releaseId, stagingPath],
+				[
+					randomUUID(),
+					targetImport.importId,
+					targetImport.releaseId,
+					stagingPath,
+				],
 			),
 		).toThrow();
 		const stagingImport = insertImport(state);

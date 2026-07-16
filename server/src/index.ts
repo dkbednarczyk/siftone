@@ -16,6 +16,7 @@ import {
 	recoverInterruptedOperations,
 } from "./state/reconcile";
 import { startSourceWatcher } from "./state/watcher";
+import { formatDuration } from "./util/duration";
 
 export type ServerCommandOptions = Readonly<{
 	config?: string;
@@ -75,6 +76,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 		stagingRoot: config.paths.stagingRoot,
 	});
 
+	const startupReconciliationStartedAt = performance.now();
 	const prepared = await preparePublication(
 		config.paths.watchRoot,
 		config.paths.generatedLibraryRoot,
@@ -96,11 +98,14 @@ async function runServer(config: ServerConfig): Promise<void> {
 		incompleteSourceContainers: prepared.incompleteSourceContainers,
 	});
 
-	console.info(`Reconciled ${prepared.plans.length} desired import(s).`);
+	console.info(
+		`Took ${formatDuration(performance.now() - startupReconciliationStartedAt)} to reconcile ${prepared.plans.length} desired import(s) on startup.`,
+	);
 
 	const watcher = startSourceWatcher({
 		watchRoot: config.paths.watchRoot,
 		onContainer: async (container) => {
+			const incrementalReconciliationStartedAt = performance.now();
 			const targeted = await prepareSourceContainer(
 				config.paths.watchRoot,
 				config.paths.generatedLibraryRoot,
@@ -124,6 +129,10 @@ async function runServer(config: ServerConfig): Promise<void> {
 					? [container]
 					: [],
 			});
+
+			console.info(
+				`Took ${formatDuration(performance.now() - incrementalReconciliationStartedAt)} to reconcile ${targeted.plans.length} desired import(s) for incremental update ${container}.`,
+			);
 		},
 		onLoss: (error) =>
 			state.markReconciliationRequired(

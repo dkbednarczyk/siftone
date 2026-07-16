@@ -23,7 +23,7 @@ The server requires a TOML configuration file before it opens its HTTP socket.
 Pass one explicitly with `--config` (either `--config /path/to/config.toml`
 or `--config=/path/to/config.toml`). Relative explicit paths are resolved from
 the current working directory. Without the flag, Siftone loads `config.toml`
-beside the executable.
+from the current working directory.
 
 For development with the repository's `server/config.toml`:
 
@@ -57,8 +57,8 @@ Only the source **watch root** and symlink destination **generated library
 root** are required. `server.port` is optional and defaults to `3000`; when
 specified it must be an integer from `1` through `65535`.
 
-The configuration defaults beside the executable. Managed data defaults under
-`~/.siftone`:
+The configuration defaults to `config.toml` in the current working directory.
+Managed data defaults under `~/.siftone`:
 
 ```text
 config.toml                    configuration file
@@ -70,8 +70,8 @@ config.toml                    configuration file
 Optional TOML overrides are available for `server.port`, `paths.cache_root`,
 `paths.state_root`, and `paths.backup_root`. `paths.staging_root` may also be
 overridden; by default it is a `.siftone-staging` sibling of the generated
-library root, rather than beside the executable, because atomic publication
-requires it to share the library filesystem.
+library root because atomic publication requires it to share the library
+filesystem.
 
 The TOML schema is strict: unknown top-level, `server`, or `paths` keys,
 and values with the wrong type, prevent startup. Every configured path is
