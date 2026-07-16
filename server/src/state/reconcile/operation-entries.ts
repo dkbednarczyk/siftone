@@ -20,6 +20,7 @@ function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
 	return rows.map((row) => {
 		const sourcePath = canonicalAbsolutePath(row.source_path);
 		const rootPath = canonicalAbsolutePath(row.root_path);
+
 		if (
 			!isPathWithinRoot(rootPath, sourcePath) ||
 			sourcePath === rootPath

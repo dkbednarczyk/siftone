@@ -7,9 +7,11 @@ export function immediate<T>(state: ImportState, work: () => T): T {
 	try {
 		const result = work();
 		state.database.run("COMMIT");
+
 		return result;
 	} catch (error) {
 		state.database.run("ROLLBACK");
+
 		throw error;
 	}
 }

@@ -167,6 +167,6 @@ export async function entriesMatch(
 			return false;
 		}
 	}
-	
+
 	return true;
 }

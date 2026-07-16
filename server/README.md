@@ -51,11 +51,17 @@ bun run --cwd server state:restore /path/to/imports.sqlite
 [paths]
 watch_root = "/srv/downloads"
 generated_library_root = "/srv/music"
+
+[musicbrainz]
+# Required to enable MusicBrainz artwork lookups.
+contact = "mailto:you@example.com"
 ```
 
 Only the source **watch root** and symlink destination **generated library
-root** are required. `server.port` is optional and defaults to `3000`; when
-specified it must be an integer from `1` through `65535`.
+root** are required. `musicbrainz.contact` is optional and is only checked as
+a string. Without it, MusicBrainz artwork lookup is disabled. `server.port` is
+optional and defaults to `3000`; when specified it must be an integer from `1`
+through `65535`.
 
 The configuration defaults to `config.toml` in the current working directory.
 Managed data defaults under `~/.siftone`:
@@ -73,12 +79,36 @@ overridden; by default it is a `.siftone-staging` sibling of the generated
 library root because atomic publication requires it to share the library
 filesystem.
 
-The TOML schema is strict: unknown top-level, `server`, or `paths` keys,
-and values with the wrong type, prevent startup. Every configured path is
-non-empty and absolute. The source watch root must already exist and be a
-directory. Siftone resolves existing symlinks, creates the managed generated,
-cache, staging, state, and backup roots when absent, and rejects equal,
-parent/child, or otherwise overlapping roots.
+To test the MusicBrainz client and its Cover Art Archive support, configure
+`musicbrainz.contact` and run:
+
+```bash
+bun run --cwd server musicbrainz:test \
+  --artist "Album Artist" \
+  --album "Album Title"
+```
+
+The standalone prototype only accepts an exact MusicBrainz release-group match
+for the tagged album artist and title, then compares up to 100 matching release
+editions. It downloads only `Front`-type archive thumbnails, prefers the `1200`-pixel
+JPEG (then `500` and `250`), limits every download to 5 MiB, and writes its
+selected file below `paths.cache_root` at `musicbrainz-test/cover.jpg` by
+default. Pass a relative `--output` path
+ending in `.jpg` or `.jpeg`, or `--config /path/to/config.toml`, to override
+those defaults. It does not yet participate in import or publication.
+
+Build the standalone prototype with:
+
+```bash
+bun run --cwd server build:musicbrainz-test
+```
+
+The TOML schema is strict: unknown top-level, `server`, `paths`, or
+`musicbrainz` keys, and values with the wrong type, prevent startup. Every
+configured path is non-empty and absolute. The source watch root must already
+exist and be a directory. Siftone resolves existing symlinks, creates the
+managed generated, cache, staging, state, and backup roots when absent, and
+rejects equal, parent/child, or otherwise overlapping roots.
 
 ## Current behavior
 
@@ -144,14 +174,12 @@ reported for review.
 - Source changes wait for a quiet period, revalidate, and reconcile their
   immediate watch-root child. Conflicts and incomplete scans suppress destructive
   changes and mark full reconciliation required.
-- A tracked source missing from a complete scan is recorded as missing. After the
-  current fixed seven-day grace period, its generated links are eligible for a
+- A tracked source absent from a complete scan is immediately removed through a
   journaled delete operation. Permission/I/O errors and incomplete scans do not
   authorize that deletion.
 - Folder path/name is candidate identity. A rename/move is a missing old candidate
   plus a new candidate; no inode/device tracking.
-- Immediate notifications, retry policy, configurable grace periods, and review
-  resolution remain planned.
+- Immediate notifications, retry policy, and review resolution remain planned.
 
 ## Artwork
 

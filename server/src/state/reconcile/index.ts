@@ -5,7 +5,7 @@ import { canonicalAbsolutePath, isPathWithinRoot } from "../canonical-path";
 import type { ImportState } from "../import-state";
 import { ensurePublicationRoots } from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
-import { bigintRow, immediate, nowNs } from "./database";
+import { immediate, nowNs } from "./database";
 import { executeOperation } from "./execute-operation";
 import { currentImports, destinationEntries } from "./operation-entries";
 import { createOperation, existingFor } from "./operation-store";
@@ -13,12 +13,11 @@ import type { OperationRow } from "./types";
 
 const OPERATION_CONCURRENCY = 4;
 
-const MISSING_GRACE_NS = 7n * 24n * 60n * 60n * 1_000_000_000n;
-
 function containerKey(watchRoot: string, path: string): string {
 	const containerPath = canonicalAbsolutePath(
 		isAbsolute(path) ? path : join(watchRoot, path),
 	);
+
 	if (!isPathWithinRoot(watchRoot, containerPath)) {
 		throw new Error(`Source container escapes its watch root: ${path}`);
 	}
@@ -83,9 +82,11 @@ export async function reconcileImports({
 
 	const desiredKeys = new Map<string, Set<string>>();
 	const scheduled: OperationRow[] = [];
+
 	for (const item of desired) {
 		const releaseKeys =
 			desiredKeys.get(item.containerPath) ?? new Set<string>();
+
 		if (releaseKeys.has(item.input.logicalReleaseKey)) {
 			throw new Error(
 				`Duplicate source release: ${item.containerPath} (${item.input.logicalReleaseKey})`,
@@ -94,19 +95,18 @@ export async function reconcileImports({
 
 		releaseKeys.add(item.input.logicalReleaseKey);
 		desiredKeys.set(item.containerPath, releaseKeys);
+
 		const existing = existingFor(
 			state,
 			item.containerPath,
 			item.input.logicalReleaseKey,
 		);
-		if (
-			existing !== null &&
-			state.database
-				.query<{ id: string }, [string]>(
-					"SELECT id FROM operations WHERE import_id = ?",
-				)
-				.get(existing.import_id) !== null
-		) {
+
+		const id_query = state.database.query<{ id: string }, [string]>(
+			"SELECT id FROM operations WHERE import_id = ?",
+		);
+
+		if (existing !== null && id_query.get(existing.import_id) !== null) {
 			continue;
 		}
 
@@ -194,44 +194,29 @@ export async function reconcileImports({
 				continue;
 			}
 
-			const missing = bigintRow<
-				{ missing_since_ns: bigint | null },
-				[string]
-			>(
-				state.database.query<
-					{ missing_since_ns: bigint | null },
-					[string]
-				>("SELECT missing_since_ns FROM source_releases WHERE id = ?"),
-				row.release_id,
-			)?.missing_since_ns;
-
-			const since = missing ?? nowNs();
 			immediate(state, () =>
 				state.database.run(
 					"UPDATE source_releases SET availability = 'missing', missing_since_ns = COALESCE(missing_since_ns, ?), updated_at_ns = ? WHERE id = ?",
-					[since, nowNs(), row.release_id],
+					[nowNs(), nowNs(), row.release_id],
 				),
 			);
-
-			if (nowNs() - since >= MISSING_GRACE_NS) {
-				scheduled.push(
-					createOperation(
-						state,
-						{
-							import_id: row.import_id,
-							release_id: row.release_id,
-							destination_path: row.destination_path,
-							manifest_hash: "",
-							container_availability: "missing",
-							release_availability: "missing",
-						},
-						undefined,
-						stagingRoot,
-						"delete",
-						row.destination_path,
-					),
-				);
-			}
+			scheduled.push(
+				createOperation(
+					state,
+					{
+						import_id: row.import_id,
+						release_id: row.release_id,
+						destination_path: row.destination_path,
+						manifest_hash: "",
+						container_availability: "missing",
+						release_availability: "missing",
+					},
+					undefined,
+					stagingRoot,
+					"delete",
+					row.destination_path,
+				),
+			);
 		}
 
 		if (complete) {

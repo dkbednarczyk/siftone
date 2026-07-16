@@ -22,6 +22,7 @@ const ENTRY_IO_CONCURRENCY = 8;
 
 async function stage(entries: readonly Entry[], path: string): Promise<void> {
 	await rm(path, { recursive: true, force: true });
+
 	await mapBounded(
 		entries,
 		async (entry) => {
@@ -39,7 +40,9 @@ async function stage(entries: readonly Entry[], path: string): Promise<void> {
 		},
 		ENTRY_IO_CONCURRENCY,
 	);
+
 	await mkdir(path, { recursive: true });
+
 	await mapBounded(
 		entries,
 		(entry) => symlink(entry.sourcePath, join(path, entry.destinationName)),
@@ -70,24 +73,31 @@ function finalizeOperation(
 			state.database.run("DELETE FROM operations WHERE id = ?", [
 				operation.id,
 			]);
+
 			state.database.run("DELETE FROM imports WHERE id = ?", [
 				operation.import_id,
 			]);
+
 			state.database.run("DELETE FROM source_releases WHERE id = ?", [
 				operation.source_release_id,
 			]);
+
 			state.database.run(
 				"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM source_releases)",
 			);
+
 			return;
 		}
+
 		let destination = state.database
 			.query<{ id: string }, [string]>(
 				"SELECT id FROM published_destinations WHERE import_id = ?",
 			)
 			.get(operation.import_id);
+
 		if (destination === null) {
 			const id = randomUUID();
+
 			state.database.run(
 				"INSERT INTO published_destinations (id, import_id, destination_path, published_at_ns) VALUES (?, ?, ?, ?)",
 				[
@@ -97,16 +107,20 @@ function finalizeOperation(
 					nowNs(),
 				],
 			);
+
 			destination = { id };
-		} else
+		} else {
 			state.database.run(
 				"UPDATE published_destinations SET destination_path = ?, published_at_ns = ? WHERE id = ?",
 				[operation.target_destination_path, nowNs(), destination.id],
 			);
+		}
+
 		state.database.run(
 			"DELETE FROM destination_entries WHERE destination_id = ?",
 			[destination.id],
 		);
+
 		const insertedEntries = state.database.run(
 			`INSERT INTO destination_entries (destination_id, destination_name, source_path, size, mtime_ns, kind)
 			SELECT ?, oe.destination_name, oe.source_path, oe.size, oe.mtime_ns, oe.kind
@@ -115,17 +129,21 @@ function finalizeOperation(
 			WHERE oe.operation_id = ? AND sf.source_release_id = ?`,
 			[destination.id, operation.id, operation.source_release_id],
 		).changes;
+
 		if (insertedEntries !== entries.length) {
 			throw new Error("Frozen source file disappeared from state");
 		}
+
 		state.database.run(
 			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ?)",
 			[operation.source_release_id, operation.id],
 		);
+
 		state.database.run(
 			"UPDATE imports SET manifest_hash = ?, updated_at_ns = ? WHERE id = ?",
 			[manifestHash(entries), nowNs(), operation.import_id],
 		);
+
 		state.database.run("DELETE FROM operations WHERE id = ?", [
 			operation.id,
 		]);
@@ -146,7 +164,9 @@ export async function executeOperation(
 		operation.target_destination_path,
 		operation.id,
 	);
+
 	const oldPath = priorDestination(state, operation.import_id);
+
 	const oldFsPath =
 		oldPath === null
 			? null
@@ -157,6 +177,7 @@ export async function executeOperation(
 					oldPath,
 					operation.id,
 				).destination;
+
 	try {
 		if (
 			operation.kind !== "delete" &&
@@ -166,49 +187,64 @@ export async function executeOperation(
 				recursive: true,
 				force: true,
 			});
+
 			await rm(paths.tombstone, {
 				recursive: true,
 				force: true,
 			});
+
 			finalizeOperation(state, operation, entries, false);
+
 			return;
 		}
+
 		if (operation.phase === "planned" && operation.kind !== "delete") {
 			await stage(entries, paths.staging);
 			updatePhase(state, operation.id, "staged");
 			operation.phase = "staged";
 		}
+
 		if (operation.phase === "planned" && operation.kind === "delete") {
 			updatePhase(state, operation.id, "staged");
 			operation.phase = "staged";
 		}
+
 		if (
 			operation.phase === "staged" &&
 			oldFsPath !== null &&
 			!(await isMissing(oldFsPath))
 		) {
 			await ensureDestinationParent(generatedLibraryRoot, oldFsPath);
+
 			await ensureDestinationParent(
 				generatedLibraryRoot,
 				paths.tombstone,
 			);
+
 			const oldEntries = destinationEntries(state, operation.import_id);
+
 			if (
 				operation.kind !== "repair" &&
 				operation.kind !== "delete" &&
 				!(await entriesMatch(oldFsPath, oldEntries))
-			)
+			) {
 				throw new InvalidOperationState(
 					`Refusing to replace drifted output: ${oldFsPath}`,
 				);
-			if (!(await isMissing(paths.tombstone)))
+			}
+
+			if (!(await isMissing(paths.tombstone))) {
 				throw new InvalidOperationState(
 					`Tombstone exists: ${paths.tombstone}`,
 				);
+			}
+
 			await rename(oldFsPath, paths.tombstone);
 			updatePhase(state, operation.id, "tombstoned");
+
 			operation.phase = "tombstoned";
 		}
+
 		if (
 			operation.phase === "staged" &&
 			(oldFsPath === null || (await isMissing(oldFsPath)))
@@ -217,45 +253,60 @@ export async function executeOperation(
 				oldFsPath !== null &&
 				(await isMissing(paths.tombstone)) &&
 				operation.kind !== "repair"
-			)
+			) {
 				throw new InvalidOperationState(
 					`Published destination disappeared before replacement: ${oldFsPath}`,
 				);
+			}
+
 			updatePhase(state, operation.id, "tombstoned");
+
 			operation.phase = "tombstoned";
 		}
+
 		if (operation.phase === "tombstoned" && operation.kind !== "delete") {
 			await ensureDestinationParent(
 				generatedLibraryRoot,
 				paths.destination,
 			);
-			if (!(await isMissing(paths.destination)))
+
+			if (!(await isMissing(paths.destination))) {
 				throw new InvalidOperationState(
 					`Destination exists: ${paths.destination}`,
 				);
+			}
+
 			await rename(paths.staging, paths.destination);
 			updatePhase(state, operation.id, "published");
+
 			operation.phase = "published";
 		}
+
 		if (operation.phase === "tombstoned" && operation.kind === "delete") {
 			await rm(paths.tombstone, {
 				recursive: true,
 				force: true,
 			});
+
 			finalizeOperation(state, operation, entries, true);
+
 			return;
 		}
+
 		if (operation.phase === "published") {
 			await rm(paths.tombstone, {
 				recursive: true,
 				force: true,
 			});
+
 			finalizeOperation(state, operation, entries, false);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+
 		if (error instanceof InvalidOperationState) {
 			updatePhase(state, operation.id, "attention_required", message);
+
 			state.database.run(
 				"INSERT OR IGNORE INTO reviews (id, import_id, operation_id, kind, details_json, created_at_ns) VALUES (?, NULL, ?, 'attention_required', ?, ?)",
 				[

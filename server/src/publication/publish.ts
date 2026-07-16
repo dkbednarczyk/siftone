@@ -132,7 +132,7 @@ function createAlbumPlans(
 					`Candidate ${input.root} has an unsafe or duplicate planned destination`,
 				);
 			}
-			
+
 			destinations.add(entry.destinationPath);
 		}
 
@@ -396,7 +396,7 @@ export async function publishPlans({
 		);
 
 		await beforeCommit?.();
-		
+
 		// Commits remain serial: partial success is deliberate and hooks observe order.
 		await mapBounded(
 			pending.map((album, index) => ({ album, index })),

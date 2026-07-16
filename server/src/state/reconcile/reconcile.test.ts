@@ -166,6 +166,38 @@ describe("reconciliation", () => {
 		).toBe("present");
 		state.close();
 	});
+	test("deletes a missing source release after a complete scan", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: true,
+		});
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [],
+			complete: true,
+		});
+
+		await expect(lstat(paths.destination)).rejects.toThrow();
+		expect(
+			state.database
+				.query<{ n: number }, []>("SELECT count(*) AS n FROM imports")
+				.get()?.n,
+		).toBe(0);
+		state.close();
+	});
+
 	test("publishes independent albums under one artist concurrently", async () => {
 		const paths = await fixture();
 		const secondSourceRoot = join(paths.watchRoot, "Second Album");

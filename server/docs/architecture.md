@@ -139,7 +139,7 @@ Reconciliation classifies each desired release against state and disk as one of:
 - **add**: no tracked import exists;
 - **replace**: its destination or recorded input manifest changed;
 - **repair**: tracked output drifted from its recorded entries;
-- **delete**: a previously present source is still absent after its grace period.
+- **delete**: a previously present source is absent from a complete scan.
 
 For each change, state first persists an operation with its destination claims and
 entries. The operation then stages an album, moves any prior owned output aside

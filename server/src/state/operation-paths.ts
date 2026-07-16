@@ -82,7 +82,7 @@ export function operationPaths(
 ) {
 	const destination = canonicalAbsolutePath(destinationPath);
 	const staging = canonicalAbsolutePath(stagingPath);
-	
+
 	if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
 		throw new InvalidOperationState(
 			"Destination escapes generated-library root",

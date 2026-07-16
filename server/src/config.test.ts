@@ -100,6 +100,39 @@ describe("server configuration", () => {
 		});
 	});
 
+	test("allows an optional MusicBrainz contact", async () => {
+		const directory = await makeTemporaryDirectory();
+		const configPath = await writeConfig(directory);
+
+		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+			musicBrainz: { contact: undefined },
+		});
+
+		await writeFile(
+			configPath,
+			`${tomlPaths()}\n[musicbrainz]\ncontact = "mailto:music@example.com"\n`,
+		);
+		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+			musicBrainz: { contact: "mailto:music@example.com" },
+		});
+
+		await writeFile(
+			configPath,
+			`${tomlPaths()}\n[musicbrainz]\ncontact = ""\n`,
+		);
+		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+			musicBrainz: { contact: "" },
+		});
+
+		await writeFile(
+			configPath,
+			`${tomlPaths()}\n[musicbrainz]\ncontact = 42\n`,
+		);
+		await expect(loadExplicitConfig(configPath)).rejects.toThrow(
+			"musicbrainz.contact",
+		);
+	});
+
 	test("defaults managed storage under the user Siftone directory", async () => {
 		const configDirectory = await makeTemporaryDirectory();
 		const configPath = await writeConfig(configDirectory);
@@ -238,6 +271,7 @@ describe("server configuration", () => {
 			`unexpected = true\n\n${tomlPaths()}`,
 			`[server]\nunexpected = true\n\n${tomlPaths()}`,
 			`${tomlPaths()}unexpected = true\n`,
+			`${tomlPaths()}\n[musicbrainz]\nunexpected = true\n`,
 			`server = "invalid"\n\n${tomlPaths()}`,
 			'paths = "invalid"\n',
 			'[paths]\nwatch_root = 1\ngenerated_library_root = "/srv/music"\n',

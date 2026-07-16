@@ -8,16 +8,20 @@
 		"start": "bun run src/index.ts --config ./config.toml",
 		"scan:dry-run": "bun run src/index.ts --config ./config.toml --dry-run",
 		"state:restore": "bun run src/index.ts --config ./config.toml --backup",
+		"musicbrainz:test": "bun run src/musicbrainz-test.ts",
 		"test": "bun test",
 		"check": "biome check .",
 		"typecheck": "tsc --project tsconfig.json",
-		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/siftone"
+		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/siftone",
+		"build:musicbrainz-test": "bun build --compile --target=bun-linux-x64 src/musicbrainz-test.ts --outfile dist/musicbrainz-test"
 	},
 	"dependencies": {
 		"chokidar": "^5.0.0",
 		"commander": "^15.0.0",
 		"elysia": "^1.4.29",
+		"image-size": "^2.0.2",
 		"music-metadata": "^11.14.0",
+		"musicbrainz-api": "^1.2.1",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {

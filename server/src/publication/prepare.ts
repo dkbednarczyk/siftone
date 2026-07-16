@@ -508,7 +508,7 @@ export async function prepareSourceContainer(
 		discovery.candidate,
 		generatedLibraryRoot,
 	);
-	
+
 	const arbitration = arbitratePublicationContenders(prepared.contenders);
 
 	return {

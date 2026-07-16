@@ -42,7 +42,9 @@ export async function mapBounded<T, R>(
 			})(),
 		);
 	}
+
 	await Promise.all(workers);
+
 	if (failed) {
 		throw failure;
 	}

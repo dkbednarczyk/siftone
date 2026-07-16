@@ -95,23 +95,27 @@ export class SourceWatchCoordinator {
 		this.onLoss(error);
 	}
 	async flush(): Promise<void> {
-		while (this.#work.size > 0) {
-			for (const [container, work] of this.#work) {
-				if (!work.running && work.timer === undefined && work.dirty) {
-					void this.#run(container, work);
-				}
-			}
-
-			await new Promise((resolve) =>
-				setTimeout(resolve, Math.max(1, this.quietMs)),
-			);
+		if (this.#work.size === 0) {
+			return;
 		}
+
+		for (const [container, work] of this.#work) {
+			if (!work.running && work.timer === undefined && work.dirty) {
+				void this.#run(container, work);
+			}
+		}
+
+		await new Promise((resolve) =>
+			setTimeout(resolve, Math.max(1, this.quietMs)),
+		);
+
+		return this.flush();
 	}
 	async close(): Promise<void> {
 		for (const work of this.#work.values()) {
 			if (work.timer !== undefined) clearTimeout(work.timer);
 		}
-		
+
 		this.#work.clear();
 	}
 }

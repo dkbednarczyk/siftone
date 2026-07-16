@@ -118,7 +118,7 @@ function openAndValidateSchema(path: string): Database {
 		return database;
 	} catch (error) {
 		database.close();
-		
+
 		throw error;
 	}
 }

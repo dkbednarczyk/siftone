@@ -60,25 +60,35 @@ export function createOperation(
 	kind: OperationRow["kind"],
 	oldDestination: string | null,
 ): OperationRow {
-	if (existing === null && desired === undefined)
+	if (existing === null && desired === undefined) {
 		throw new Error("New operation requires desired source data");
+	}
+
 	const newDesired = desired;
 	const id = randomUUID();
+
 	const releaseId = existing?.release_id ?? randomUUID();
 	const importId = existing?.import_id ?? randomUUID();
+
 	const target = desired?.destinationPath ?? oldDestination;
-	if (target === null || target === undefined)
+
+	if (target === null || target === undefined) {
 		throw new Error("Operation needs a destination claim");
+	}
+
 	const timestamp = nowNs();
 	immediate(state, () => {
 		if (existing === null) {
-			if (newDesired === undefined)
+			if (newDesired === undefined) {
 				throw new Error("New operation requires desired source data");
+			}
+
 			let container = state.database
 				.query<{ id: string }, [string]>(
 					"SELECT id FROM source_containers WHERE root_path = ?",
 				)
 				.get(newDesired.containerPath);
+
 			if (container === null) {
 				container = { id: randomUUID() };
 				state.database.run(
@@ -86,6 +96,7 @@ export function createOperation(
 					[container.id, newDesired.containerPath, timestamp],
 				);
 			}
+
 			state.database.run(
 				"INSERT INTO source_releases (id, container_id, logical_release_key, album_artist, album_title) VALUES (?, ?, ?, ?, ?)",
 				[
@@ -96,6 +107,7 @@ export function createOperation(
 					newDesired.input.albumTitle,
 				],
 			);
+
 			state.database.run(
 				"INSERT INTO imports (id, source_release_id, manifest_hash, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?)",
 				[
@@ -111,6 +123,7 @@ export function createOperation(
 				"UPDATE source_containers SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = (SELECT container_id FROM source_releases WHERE id = ?)",
 				[timestamp, releaseId],
 			);
+
 			state.database.run(
 				"UPDATE source_releases SET album_artist = ?, album_title = ?, availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = ?",
 				[
@@ -121,8 +134,11 @@ export function createOperation(
 				],
 			);
 		}
-		if (desired !== undefined)
+
+		if (desired !== undefined) {
 			insertOrUpdateSourceFiles(state, releaseId, desired.entries);
+		}
+
 		state.database.run(
 			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, NULL, ?, ?)",
 			[
@@ -136,17 +152,20 @@ export function createOperation(
 				timestamp,
 			],
 		);
+
 		for (const path of new Set(
 			[target, oldDestination].filter(
 				(value): value is string => value !== null,
 			),
-		))
+		)) {
 			state.database.run(
 				"INSERT INTO operation_destination_claims (operation_id, destination_path) VALUES (?, ?)",
 				[id, path],
 			);
-		if (desired !== undefined)
-			for (const entry of desired.entries)
+		}
+
+		if (desired !== undefined) {
+			for (const entry of desired.entries) {
 				state.database.run(
 					"INSERT INTO operation_entries (operation_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
 					[
@@ -158,7 +177,10 @@ export function createOperation(
 						entry.kind,
 					],
 				);
+			}
+		}
 	});
+
 	return {
 		id,
 		import_id: importId,

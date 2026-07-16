@@ -19,10 +19,15 @@ export type ServerPaths = Readonly<{
 	backupRoot: string;
 }>;
 
+export type MusicBrainzConfig = Readonly<{
+	contact?: string;
+}>;
+
 export type ServerConfig = Readonly<{
 	configPath: string;
 	port: number;
 	paths: ServerPaths;
+	musicBrainz: MusicBrainzConfig;
 }>;
 
 export type ConfigLoadOptions = Readonly<{
@@ -62,6 +67,11 @@ const TomlConfigSchema = z.strictObject({
 		state_root: z.string().optional(),
 		backup_root: z.string().optional(),
 	}),
+	musicbrainz: z
+		.strictObject({
+			contact: z.string().optional(),
+		})
+		.optional(),
 });
 
 type TomlConfig = z.infer<typeof TomlConfigSchema>;
@@ -288,5 +298,8 @@ export async function loadServerConfig(
 			result.data,
 			options.homeDirectory ?? homedir(),
 		),
+		musicBrainz: {
+			contact: result.data.musicbrainz?.contact,
+		},
 	};
 }

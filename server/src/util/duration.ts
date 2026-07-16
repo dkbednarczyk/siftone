@@ -17,7 +17,7 @@ export function formatDuration(milliseconds: number): string {
 	if (seconds > 0) {
 		parts.push(`${seconds}s`);
 	}
-	
+
 	if (remainingMilliseconds > 0 || parts.length === 0) {
 		parts.push(`${remainingMilliseconds}ms`);
 	}
