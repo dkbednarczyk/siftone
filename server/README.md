@@ -127,7 +127,7 @@ rejects equal, parent/child, or otherwise overlapping roots.
 watch-root child
   → full scan or quiet-period watcher snapshot
   → FLAC/MP3 discovery and tag validation
-  → tag-based logical release split and collision arbitration
+  → exact-ALBUM logical release split and collision arbitration
   → SQLite operation journal + same-filesystem staging directory
   → atomically publish or repair generated album
 ```
@@ -152,11 +152,14 @@ The current fixed layout is:
 {AlbumArtistOrArtist}/{Album}/{TrackNumber} {Title}.{ext}
 ```
 
-Use the shared track artist if `ALBUMARTIST` is absent; releases with differing
-track artists require `ALBUMARTIST`. Paths are deterministically sanitized while
-preserving Unicode. Competing non-equivalent destinations require review; an
-otherwise identical pure-MP3 contender is automatically suppressed when an
-equivalent pure-FLAC contender exists.
+When `ALBUMARTIST` is absent, Siftone uses the shared exact track `ARTIST`; if
+multiple exact track artists occur, it uses `Various Artists`. One consistent
+explicit `ALBUMARTIST` may be absent from other tracks, but conflicting explicit
+values invalidate the whole same-title release. Releases are split by exact
+embedded `ALBUM` values, not source folder names. Paths are deterministically
+sanitized while preserving Unicode. Competing non-equivalent destinations require
+review; an otherwise identical pure-MP3 contender is automatically suppressed when
+an equivalent pure-FLAC contender exists.
 
 Each generated album contains only audio symlinks and an optional local-artwork
 symlink, named `cover.jpg` or `cover.png`. Imports stage on the same filesystem

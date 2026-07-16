@@ -237,21 +237,22 @@ export function arbitratePublicationContenders(
 	return { plans, suppressed, unresolved };
 }
 
-async function splitTagGroups(
+export async function splitTagGroups(
 	candidate: DiscoveredCandidate,
+	readTags: AudioTagReader = readAudioTags,
 ): Promise<
 	readonly { candidate: DiscoveredCandidate; reader: AudioTagReader }[]
 > {
 	const tags = new Map<string, CachedTagRead>();
 	const groups: string[][] = [];
-	const groupedPaths = new Map<string, Map<string, string[]>>();
+	const groupedPaths = new Map<string, string[]>();
 	const reads = await mapBounded(
 		candidate.audioPaths,
 		async (path) => {
 			try {
 				return {
 					path,
-					result: { ok: true, tags: await readAudioTags(path) },
+					result: { ok: true, tags: await readTags(path) },
 				} as const;
 			} catch (error) {
 				return { path, result: { ok: false, error } } as const;
@@ -269,21 +270,17 @@ async function splitTagGroups(
 		}
 
 		const album = result.tags.album?.trim() ?? "";
-		const artist =
-			result.tags.albumArtist?.trim() || result.tags.artist?.trim() || "";
 
-		if (album === "" || artist === "") {
+		if (album === "") {
 			groups.push([path]);
 			continue;
 		}
 
-		const albums = groupedPaths.get(artist) ?? new Map<string, string[]>();
-		const paths = albums.get(album);
+		const paths = groupedPaths.get(album);
 		if (paths === undefined) {
 			const newPaths = [path];
 
-			albums.set(album, newPaths);
-			groupedPaths.set(artist, albums);
+			groupedPaths.set(album, newPaths);
 			groups.push(newPaths);
 
 			continue;

@@ -106,10 +106,12 @@ immediate child of watch root
   -> reconcile desired plans with SQLite and disk
 ```
 
-A source directory is a **container**, while tags may divide its audio into one or
-more **logical releases**. This preserves directory-level watching while allowing
-tags—not source folder names—to define publishable albums. Discovery is bounded
-by depth and entry budgets so a pathological tree cannot make a scan unbounded.
+A source directory is a **container**, while exact embedded `ALBUM` tags may
+divide its audio into one or more **logical releases**. Validation then resolves
+the album artist from `ALBUMARTIST` or the track artists; source folder names
+never define a release. This preserves directory-level watching while allowing
+tags to define publishable albums. Discovery is bounded by depth and entry
+budgets so a pathological tree cannot make a scan unbounded.
 
 The preparation phase marks source containers incomplete when discovery,
 validation, or collision arbitration cannot safely form a plan. Reconciliation

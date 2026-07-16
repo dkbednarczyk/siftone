@@ -13,7 +13,6 @@ export type IssueCode =
 	| "INVALID_DISC_NUMBER"
 	| "CONFLICTING_ALBUM"
 	| "CONFLICTING_ALBUM_ARTIST"
-	| "MISSING_ALBUM_ARTIST"
 	| "DUPLICATE_DISC_TRACK";
 
 export type ValidationIssue = Readonly<{
@@ -191,8 +190,8 @@ export async function validateCandidate(
 	const tracks: ValidatedTrack[] = [];
 
 	let expectedAlbum: string | undefined;
-	let expectedAlbumArtist: string | undefined;
 
+	const albumArtists = new Set<string>();
 	const artists = new Set<string>();
 	const discTracks = new Set<string>();
 
@@ -288,27 +287,15 @@ export async function validateCandidate(
 			break;
 		}
 
-		if (tracks.length > 0 && expectedAlbumArtist !== trackAlbumArtist) {
-			issues.push(
-				issue(
-					"CONFLICTING_ALBUM_ARTIST",
-					"ALBUMARTIST must be present on every track or absent on every track",
-					path,
-				),
-			);
-
-			break;
-		}
-
 		if (
-			trackAlbumArtist === undefined &&
-			artists.size > 0 &&
-			!artists.has(artist)
+			trackAlbumArtist !== undefined &&
+			albumArtists.size > 0 &&
+			!albumArtists.has(trackAlbumArtist)
 		) {
 			issues.push(
 				issue(
-					"MISSING_ALBUM_ARTIST",
-					"ALBUMARTIST is required when tracks have different ARTIST values",
+					"CONFLICTING_ALBUM_ARTIST",
+					"Tracks with the same ALBUM must share one ALBUMARTIST when present",
 					path,
 				),
 			);
@@ -318,7 +305,9 @@ export async function validateCandidate(
 
 		discTracks.add(discTrackKey);
 		expectedAlbum = trackAlbum;
-		expectedAlbumArtist = trackAlbumArtist;
+		if (trackAlbumArtist !== undefined) {
+			albumArtists.add(trackAlbumArtist);
+		}
 		artists.add(artist);
 
 		tracks.push({
@@ -342,7 +331,10 @@ export async function validateCandidate(
 		};
 	}
 
-	const albumArtist = expectedAlbumArtist ?? tracks[0].artist;
+	const [explicitAlbumArtist] = albumArtists;
+	const albumArtist =
+		explicitAlbumArtist ??
+		(artists.size === 1 ? tracks[0].artist : "Various Artists");
 	const artwork = selectArtworkPath(candidate, tracks, expectedAlbum);
 	return {
 		valid: true,

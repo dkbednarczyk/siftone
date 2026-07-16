@@ -174,7 +174,7 @@ describe("candidate metadata validation", () => {
 		});
 	});
 
-	test("requires ALBUMARTIST when artists differ", async () => {
+	test("uses Various Artists when ALBUMARTIST is absent and artists differ", async () => {
 		const first = "/source/Album/01 Song.flac";
 		const second = "/source/Album/02 Song.flac";
 
@@ -191,10 +191,78 @@ describe("candidate metadata validation", () => {
 		);
 
 		expect(result).toMatchObject({
+			valid: true,
+			candidate: { albumArtist: "Various Artists" },
+		});
+	});
+
+	test("uses a consistent ALBUMARTIST when it is missing from later tracks", async () => {
+		const first = "/source/Album/01 Song.flac";
+		const second = "/source/Album/02 Song.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first, albumArtist: "Album Artist" }),
+				[second]: tags({
+					path: second,
+					artist: "Guest",
+					trackNumber: 2,
+				}),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			valid: true,
+			candidate: { albumArtist: "Album Artist" },
+		});
+	});
+
+	test("uses a consistent ALBUMARTIST when it is missing from earlier tracks", async () => {
+		const first = "/source/Album/01 Song.flac";
+		const second = "/source/Album/02 Song.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first }),
+				[second]: tags({
+					path: second,
+					artist: "Guest",
+					albumArtist: "Album Artist",
+					trackNumber: 2,
+				}),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			valid: true,
+			candidate: { albumArtist: "Album Artist" },
+		});
+	});
+
+	test("rejects conflicting explicit ALBUMARTIST values", async () => {
+		const first = "/source/Album/01 Song.flac";
+		const second = "/source/Album/02 Song.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first, albumArtist: "Artist One" }),
+				[second]: tags({
+					path: second,
+					albumArtist: "Artist Two",
+					trackNumber: 2,
+				}),
+			}),
+		);
+
+		expect(result).toMatchObject({
 			valid: false,
 			issues: [
 				expect.objectContaining({
-					code: "MISSING_ALBUM_ARTIST",
+					code: "CONFLICTING_ALBUM_ARTIST",
+					path: second,
 				}),
 			],
 		});
