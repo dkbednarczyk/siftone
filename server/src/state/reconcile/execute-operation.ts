@@ -16,11 +16,14 @@ import {
 	operationEntries,
 	priorDestination,
 } from "./operation-entries";
-import type { Entry, OperationRow } from "./types";
+import type { OperationRow, SourceEntry } from "./types";
 
 const ENTRY_IO_CONCURRENCY = 8;
 
-async function stage(entries: readonly Entry[], path: string): Promise<void> {
+async function stage(
+	entries: readonly SourceEntry[],
+	path: string,
+): Promise<void> {
 	await rm(path, { recursive: true, force: true });
 
 	await mapBounded(
@@ -65,7 +68,7 @@ function updatePhase(
 function finalizeOperation(
 	state: ImportState,
 	operation: OperationRow,
-	entries: readonly Entry[],
+	entries: readonly SourceEntry[],
 	deleteImport: boolean,
 ): void {
 	immediate(state, () => {
@@ -122,11 +125,11 @@ function finalizeOperation(
 		);
 
 		const insertedEntries = state.database.run(
-			`INSERT INTO destination_entries (destination_id, destination_name, source_path, size, mtime_ns, kind)
-			SELECT ?, oe.destination_name, oe.source_path, oe.size, oe.mtime_ns, oe.kind
+			`INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind)
+			SELECT ?, oe.destination_name, 'source', oe.source_path, NULL, oe.size, oe.mtime_ns, oe.kind
 			FROM operation_entries oe
 			JOIN source_files sf ON sf.source_path = oe.source_path
-			WHERE oe.operation_id = ? AND sf.source_release_id = ?`,
+			WHERE oe.operation_id = ? AND oe.origin = 'source' AND sf.source_release_id = ?`,
 			[destination.id, operation.id, operation.source_release_id],
 		).changes;
 
@@ -135,7 +138,7 @@ function finalizeOperation(
 		}
 
 		state.database.run(
-			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ?)",
+			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ? AND origin = 'source')",
 			[operation.source_release_id, operation.id],
 		);
 

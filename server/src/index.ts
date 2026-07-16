@@ -62,92 +62,117 @@ export function createServerCommand(): Command {
 }
 
 async function runServer(config: ServerConfig): Promise<void> {
-	const state = await openImportState({
-		stateRoot: config.paths.stateRoot,
-		generatedLibraryRoot: config.paths.generatedLibraryRoot,
-	});
-	await createDailyBackup(state, config.paths.backupRoot);
-
-	// Recovery is intentionally separate from normal reconciliation: it must not
-	// rescan every import or generated album before the source snapshot is prepared.
-	await recoverInterruptedOperations({
-		state,
-		generatedLibraryRoot: config.paths.generatedLibraryRoot,
-		stagingRoot: config.paths.stagingRoot,
-	});
-
-	const startupReconciliationStartedAt = performance.now();
-	const prepared = await preparePublication(
-		config.paths.watchRoot,
-		config.paths.generatedLibraryRoot,
-	);
-
-	if (prepared.hasIssues) {
-		console.warn(
-			"Import preflight found invalid or partial candidates; affected removals are suppressed.",
-		);
-	}
-
-	await reconcileImports({
-		state,
-		generatedLibraryRoot: config.paths.generatedLibraryRoot,
-		stagingRoot: config.paths.stagingRoot,
-		watchRoot: config.paths.watchRoot,
-		inputs: prepared.plans,
-		complete: true,
-		incompleteSourceContainers: prepared.incompleteSourceContainers,
-	});
-
-	console.info(
-		`Took ${formatDuration(performance.now() - startupReconciliationStartedAt)} to reconcile ${prepared.plans.length} desired import(s) on startup.`,
-	);
-
-	const watcher = startSourceWatcher({
-		watchRoot: config.paths.watchRoot,
-		onContainer: async (container) => {
-			const incrementalReconciliationStartedAt = performance.now();
-			const targeted = await prepareSourceContainer(
-				config.paths.watchRoot,
-				config.paths.generatedLibraryRoot,
-				container,
-			);
-
-			if (targeted.incomplete) {
-				state.markReconciliationRequired(
-					`Incomplete watcher scan for ${container}`,
-				);
-			}
-
-			await reconcileSourceContainer({
-				state,
-				generatedLibraryRoot: config.paths.generatedLibraryRoot,
-				stagingRoot: config.paths.stagingRoot,
-				watchRoot: config.paths.watchRoot,
-				containerPath: container,
-				inputs: targeted.plans,
-				incompleteSourceContainers: targeted.incomplete
-					? [container]
-					: [],
-			});
-
-			console.info(
-				`Took ${formatDuration(performance.now() - incrementalReconciliationStartedAt)} to reconcile ${targeted.plans.length} desired import(s) for incremental update ${container}.`,
-			);
-		},
-		onLoss: (error) =>
-			state.markReconciliationRequired(
-				`Watcher lost events: ${error.message}`,
-			),
-	});
-
+	let state: Awaited<ReturnType<typeof openImportState>> | undefined;
+	let watcher: ReturnType<typeof startSourceWatcher> | undefined;
+	let ready = false;
 	const server = createApp(() =>
-		state.isDegraded() ? "degraded" : "ok",
-	).listen(config.port);
+		ready && state?.isDegraded() === false ? "ok" : "degraded",
+	).listen({ hostname: "127.0.0.1", port: config.port });
 
 	console.info(
 		`Siftone server listening on http://localhost:${server.server?.port ?? config.port}`,
 	);
 
+	try {
+		const importState = await openImportState({
+			stateRoot: config.paths.stateRoot,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+		});
+		state = importState;
+		await createDailyBackup(importState, config.paths.backupRoot);
+
+		// Recovery is intentionally separate from normal reconciliation: it must not
+		// rescan every import or generated album before the source snapshot is prepared.
+		await recoverInterruptedOperations({
+			state: importState,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			stagingRoot: config.paths.stagingRoot,
+		});
+
+		const startupReconciliationStartedAt = performance.now();
+		const prepared = await preparePublication(
+			config.paths.watchRoot,
+			config.paths.generatedLibraryRoot,
+		);
+
+		if (prepared.hasIssues) {
+			console.warn(
+				"Import preflight found invalid or partial candidates; affected removals are suppressed.",
+			);
+		}
+
+		await reconcileImports({
+			state: importState,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			stagingRoot: config.paths.stagingRoot,
+			watchRoot: config.paths.watchRoot,
+			inputs: prepared.plans,
+			complete: true,
+			incompleteSourceContainers: prepared.incompleteSourceContainers,
+		});
+
+		console.info(
+			`Took ${formatDuration(performance.now() - startupReconciliationStartedAt)} to reconcile ${prepared.plans.length} desired import(s) on startup.`,
+		);
+
+		const sourceWatcher = startSourceWatcher({
+			watchRoot: config.paths.watchRoot,
+			onContainer: async (container) => {
+				const incrementalReconciliationStartedAt = performance.now();
+				const targeted = await prepareSourceContainer(
+					config.paths.watchRoot,
+					config.paths.generatedLibraryRoot,
+					container,
+				);
+
+				if (targeted.incomplete) {
+					importState.markReconciliationRequired(
+						`Incomplete watcher scan for ${container}`,
+					);
+				}
+
+				await reconcileSourceContainer({
+					state: importState,
+					generatedLibraryRoot: config.paths.generatedLibraryRoot,
+					stagingRoot: config.paths.stagingRoot,
+					watchRoot: config.paths.watchRoot,
+					containerPath: container,
+					inputs: targeted.plans,
+					incompleteSourceContainers: targeted.incomplete
+						? [container]
+						: [],
+				});
+
+				console.info(
+					`Took ${formatDuration(performance.now() - incrementalReconciliationStartedAt)} to reconcile ${targeted.plans.length} desired import(s) for incremental update ${container}.`,
+				);
+			},
+			onLoss: (error) =>
+				importState.markReconciliationRequired(
+					`Watcher lost events: ${error.message}`,
+				),
+		});
+		watcher = sourceWatcher;
+		ready = true;
+	} catch (error) {
+		if (watcher !== undefined) {
+			await watcher.close();
+		}
+
+		await server.stop();
+		state?.close();
+		throw error;
+	}
+
+	if (state === undefined || watcher === undefined) {
+		await server.stop();
+		throw new Error(
+			"Siftone server startup did not initialize its runtime",
+		);
+	}
+
+	const runningState = state;
+	const runningWatcher = watcher;
 	let stopping = false;
 
 	async function shutdown(signal: string) {
@@ -158,10 +183,10 @@ async function runServer(config: ServerConfig): Promise<void> {
 		stopping = true;
 		console.info(`Received ${signal}; stopping Siftone server.`);
 
-		await watcher.close();
+		await runningWatcher.close();
 		await server.stop();
 
-		state.close();
+		runningState.close();
 	}
 
 	process.once("SIGINT", () => void shutdown("SIGINT"));

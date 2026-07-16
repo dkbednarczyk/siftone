@@ -24,6 +24,10 @@ function nameCheck(column: string): string {
 	return CANONICAL_NAME_CHECK.replaceAll("?", column);
 }
 
+function sha256Check(column: string): string {
+	return `length(${column}) = 64 AND ${column} NOT GLOB '*[^0-9a-f]*'`;
+}
+
 const UUID_CHECK = `id GLOB '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-4[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[89ABab][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'`;
 
 export const SCHEMA_SQL = `
@@ -60,6 +64,31 @@ export const SCHEMA_SQL = `
 		created_at_ns INTEGER NOT NULL,
 		updated_at_ns INTEGER NOT NULL
 	) STRICT;
+	CREATE TABLE artwork_cache_objects (
+		sha256 TEXT PRIMARY KEY COLLATE BINARY CHECK (${sha256Check("sha256")}),
+		relative_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${nameCheck("relative_path")}),
+		byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+		width INTEGER NOT NULL CHECK (width > 0),
+		height INTEGER NOT NULL CHECK (height > 0),
+		media_type TEXT NOT NULL CHECK (media_type = 'image/jpeg'),
+		created_at_ns INTEGER NOT NULL
+	) STRICT, WITHOUT ROWID;
+	CREATE TABLE automatic_artwork (
+		source_release_id TEXT PRIMARY KEY REFERENCES source_releases(id) ON DELETE CASCADE,
+		metadata_fingerprint TEXT NOT NULL CHECK (metadata_fingerprint <> ''),
+		resolver_version TEXT NOT NULL CHECK (resolver_version <> ''),
+		status TEXT NOT NULL CHECK (status IN ('disabled', 'no_match', 'no_eligible_edition', 'no_qualifying_cover', 'edition_cap_reached', 'transient_failure', 'selected')),
+		cache_sha256 TEXT COLLATE BINARY REFERENCES artwork_cache_objects(sha256),
+		release_group_mbid TEXT CHECK (release_group_mbid IS NULL OR release_group_mbid <> ''),
+		release_mbid TEXT CHECK (release_mbid IS NULL OR release_mbid <> ''),
+		source_url TEXT CHECK (source_url IS NULL OR source_url <> ''),
+		failure_detail TEXT CHECK (failure_detail IS NULL OR failure_detail <> ''),
+		attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+		attempted_at_ns INTEGER NOT NULL,
+		next_attempt_at_ns INTEGER,
+		CHECK ((status = 'selected' AND cache_sha256 IS NOT NULL) OR (status <> 'selected' AND cache_sha256 IS NULL))
+	) STRICT, WITHOUT ROWID;
+	CREATE INDEX automatic_artwork_cache_sha_idx ON automatic_artwork(cache_sha256) WHERE cache_sha256 IS NOT NULL;
 	CREATE TABLE published_destinations (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT NOT NULL UNIQUE REFERENCES imports(id) ON DELETE CASCADE,
@@ -69,12 +98,16 @@ export const SCHEMA_SQL = `
 	CREATE TABLE destination_entries (
 		destination_id TEXT NOT NULL REFERENCES published_destinations(id) ON DELETE CASCADE,
 		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${nameCheck("destination_name")} AND instr(destination_name, '/') = 0),
-		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
-		size INTEGER NOT NULL CHECK (size >= 0),
-		mtime_ns INTEGER NOT NULL,
+		origin TEXT NOT NULL CHECK (origin IN ('source', 'cache')),
+		source_path TEXT COLLATE BINARY CHECK (source_path IS NULL OR ${absolutePathCheck("source_path")}),
+		cache_sha256 TEXT COLLATE BINARY REFERENCES artwork_cache_objects(sha256),
+		size INTEGER CHECK (size IS NULL OR size >= 0),
+		mtime_ns INTEGER,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
+		CHECK ((origin = 'source' AND source_path IS NOT NULL AND cache_sha256 IS NULL AND size IS NOT NULL AND mtime_ns IS NOT NULL) OR (origin = 'cache' AND source_path IS NULL AND cache_sha256 IS NOT NULL AND size IS NULL AND mtime_ns IS NULL AND kind = 'artwork')),
 		PRIMARY KEY (destination_id, destination_name)
 	) STRICT, WITHOUT ROWID;
+	CREATE INDEX destination_entries_cache_sha_idx ON destination_entries(cache_sha256) WHERE cache_sha256 IS NOT NULL;
 	CREATE TABLE operations (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
@@ -97,12 +130,16 @@ export const SCHEMA_SQL = `
 	CREATE TABLE operation_entries (
 		operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
 		destination_name TEXT NOT NULL COLLATE BINARY CHECK (${nameCheck("destination_name")} AND instr(destination_name, '/') = 0),
-		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
-		size INTEGER NOT NULL CHECK (size >= 0),
-		mtime_ns INTEGER NOT NULL,
+		origin TEXT NOT NULL CHECK (origin IN ('source', 'cache')),
+		source_path TEXT COLLATE BINARY CHECK (source_path IS NULL OR ${absolutePathCheck("source_path")}),
+		cache_sha256 TEXT COLLATE BINARY REFERENCES artwork_cache_objects(sha256),
+		size INTEGER CHECK (size IS NULL OR size >= 0),
+		mtime_ns INTEGER,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
+		CHECK ((origin = 'source' AND source_path IS NOT NULL AND cache_sha256 IS NULL AND size IS NOT NULL AND mtime_ns IS NOT NULL) OR (origin = 'cache' AND source_path IS NULL AND cache_sha256 IS NOT NULL AND size IS NULL AND mtime_ns IS NULL AND kind = 'artwork')),
 		PRIMARY KEY (operation_id, destination_name)
 	) STRICT, WITHOUT ROWID;
+	CREATE INDEX operation_entries_cache_sha_idx ON operation_entries(cache_sha256) WHERE cache_sha256 IS NOT NULL;
 	CREATE TABLE reviews (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT REFERENCES imports(id) ON DELETE CASCADE,

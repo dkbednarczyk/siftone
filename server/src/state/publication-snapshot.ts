@@ -9,7 +9,7 @@ import {
 	isPathBelowRoot,
 	isPathWithinRoot,
 } from "./canonical-path";
-import type { Desired, Entry } from "./reconcile/types";
+import type { Desired, SourceEntry } from "./reconcile/types";
 
 const SOURCE_STAT_CONCURRENCY = 8;
 
@@ -19,7 +19,7 @@ function kindFor(path: string): "audio" | "artwork" {
 		: "artwork";
 }
 
-export function manifestHash(entries: readonly Entry[]): string {
+export function manifestHash(entries: readonly SourceEntry[]): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify(
@@ -59,7 +59,7 @@ export async function desiredFor(
 		);
 	}
 
-	const entries = await mapBounded(
+	const entries: SourceEntry[] = await mapBounded(
 		input.entries,
 		async (entry) => {
 			const sourcePath = canonicalAbsolutePath(entry.sourcePath);
@@ -93,6 +93,7 @@ export async function desiredFor(
 			}
 
 			return {
+				origin: "source",
 				sourcePath,
 				relativeSourcePath,
 				destinationName,
@@ -126,7 +127,7 @@ export async function desiredFor(
 
 export async function entriesMatch(
 	destination: string,
-	entries: readonly Entry[],
+	entries: readonly SourceEntry[],
 ): Promise<boolean> {
 	try {
 		const [destinationStatus, artistStatus] = await Promise.all([

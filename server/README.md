@@ -114,7 +114,14 @@ rejects equal, parent/child, or otherwise overlapping roots.
 
 - Discover each immediate real child of the watch root as a candidate; recurse deterministically within it for FLAC/MP3 and JPEG/PNG sidecars (case-insensitive), with files accepted through eight path components below the candidate root (directories at that boundary are pruned) and a 10,000-entry budget per candidate. Discovery reports a recoverable issue when either limit prunes paths, excludes candidates with no discovered audio, and ignores all source symlinks.
 - Read embedded tags and validate the fields required for publication. `bun run --cwd server scan:dry-run` emits the proposed destination links and validation issues without writing any directories or symlinks.
-- At boot, open the SQLite ownership/state database, create a verified daily backup, recover interrupted operations, preflight every plan, and reconcile it against generated output. The watcher then coalesces source changes by immediate watch-root child and performs targeted reconciliation; lost events or incomplete scans degrade health and require a later full reconciliation.
+- At boot, bind the HTTP listener before opening SQLite or running import work, so
+  an unavailable port fails without scanning or changing import state. Health is
+  degraded while startup continues with opening the SQLite ownership/state
+  database, creating a verified daily backup, recovering interrupted operations,
+  preflighting every plan, and reconciling it against generated output. The
+  watcher then coalesces source changes by immediate watch-root child and performs
+  targeted reconciliation; lost events or incomplete scans degrade health and
+  require a later full reconciliation.
 - Reconciliation rejects invalid or unmanaged generated entries, stages complete
   albums on the generated-library filesystem, and atomically publishes each album
   directory. It records add, replace, repair, and delayed-delete operations in

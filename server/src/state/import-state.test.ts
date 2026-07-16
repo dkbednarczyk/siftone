@@ -27,6 +27,8 @@ const containerPath = "/watch/Album";
 const sourcePath = "/watch/Album/01.flac";
 const destinationPath = "/generated/Artist/Album";
 const stagingPath = "/staging/op";
+const cacheSha256 = "b".repeat(64);
+const metadataFingerprint = "c".repeat(64);
 
 const ids = [
 	"11111111-1111-4111-8111-111111111111",
@@ -61,6 +63,30 @@ function seed(state: Awaited<ReturnType<typeof openImportState>>) {
 	return ids[2];
 }
 
+function insertCacheObject(
+	state: Awaited<ReturnType<typeof openImportState>>,
+	sha256 = cacheSha256,
+) {
+	state.database.run(
+		"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, 42, 500, 500, 'image/jpeg', 1)",
+		[sha256, `artwork/sha256/${sha256.slice(0, 2)}/${sha256}.jpg`],
+	);
+
+	return sha256;
+}
+
+function insertAutomaticArtwork(
+	state: Awaited<ReturnType<typeof openImportState>>,
+	releaseId: string,
+	status: string,
+	cacheSha: string | null,
+) {
+	state.database.run(
+		"INSERT INTO automatic_artwork (source_release_id, metadata_fingerprint, resolver_version, status, cache_sha256, release_group_mbid, release_mbid, source_url, failure_detail, attempt_count, attempted_at_ns, next_attempt_at_ns) VALUES (?, ?, 'resolver-v1', ?, ?, NULL, NULL, NULL, NULL, 0, 1, NULL)",
+		[releaseId, metadataFingerprint, status, cacheSha],
+	);
+}
+
 function insertImport(state: Awaited<ReturnType<typeof openImportState>>) {
 	const releaseId = randomUUID();
 	const importId = randomUUID();
@@ -89,6 +115,38 @@ describe("library state", () => {
 				.query<{ journal_mode: string }, []>("PRAGMA journal_mode")
 				.get(),
 		).toEqual({ journal_mode: "wal" });
+		expect(
+			state.database
+				.query<{ quick_check: string }, []>("PRAGMA quick_check")
+				.get(),
+		).toEqual({ quick_check: "ok" });
+		expect(
+			state.database
+				.query<{ table: string }, []>("PRAGMA foreign_key_check")
+				.all(),
+		).toEqual([]);
+		expect(
+			state.database
+				.query<{ name: string }, []>(
+					"SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('artwork_cache_objects', 'automatic_artwork') ORDER BY name",
+				)
+				.all()
+				.map((row) => row.name),
+		).toEqual(["artwork_cache_objects", "automatic_artwork"]);
+		const destinationColumns = state.database
+			.query<{ name: string }, []>(
+				"PRAGMA table_info(destination_entries)",
+			)
+			.all()
+			.map((column) => column.name);
+		const operationColumns = state.database
+			.query<{ name: string }, []>("PRAGMA table_info(operation_entries)")
+			.all()
+			.map((column) => column.name);
+		for (const columns of [destinationColumns, operationColumns]) {
+			expect(columns).toContain("origin");
+			expect(columns).toContain("cache_sha256");
+		}
 		seed(state);
 		const value = (
 			state.database.query<{ mtime_ns: bigint }, []>(
@@ -162,7 +220,7 @@ describe("library state", () => {
 		).toThrow();
 		expect(() =>
 			state.database.run(
-				"INSERT INTO destination_entries VALUES (?, '02.flac', 'relative.flac', 42, 1, 'audio')",
+				"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, '02.flac', 'source', 'relative.flac', NULL, 42, 1, 'audio')",
 				[ids[3]],
 			),
 		).toThrow();
@@ -210,7 +268,7 @@ describe("library state", () => {
 		).toThrow();
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operation_entries VALUES (?, '02.flac', 'relative.flac', 42, 1, 'audio')",
+				"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, '02.flac', 'source', 'relative.flac', NULL, 42, 1, 'audio')",
 				[operationId],
 			),
 		).toThrow();
@@ -235,7 +293,7 @@ describe("library state", () => {
 		});
 		seed(state);
 		state.database.run(
-			"INSERT INTO destination_entries VALUES (?, '01.flac', ?, 42, 1, 'audio')",
+			"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, '01.flac', 'source', ?, NULL, 42, 1, 'audio')",
 			[ids[3], sourcePath],
 		);
 		state.database.run(
@@ -243,7 +301,7 @@ describe("library state", () => {
 			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
 		);
 		state.database.run(
-			"INSERT INTO operation_entries VALUES (?, '01.flac', ?, 42, 1, 'audio')",
+			"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, '01.flac', 'source', ?, NULL, 42, 1, 'audio')",
 			[ids[4], sourcePath],
 		);
 		expect(() =>
@@ -262,6 +320,265 @@ describe("library state", () => {
 			).changes,
 		).toBe(1);
 		state.close();
+	});
+
+	test("constrains cache objects and automatic artwork outcomes", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		seed(state);
+		insertCacheObject(state);
+
+		for (const status of [
+			"disabled",
+			"no_match",
+			"no_eligible_edition",
+			"no_qualifying_cover",
+			"edition_cap_reached",
+			"transient_failure",
+			"selected",
+		]) {
+			const { releaseId } = insertImport(state);
+			insertAutomaticArtwork(
+				state,
+				releaseId,
+				status,
+				status === "selected" ? cacheSha256 : null,
+			);
+		}
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM automatic_artwork",
+				)
+				.get()?.count,
+		).toBe(7);
+
+		for (const [
+			sha256,
+			relativePath,
+			byteSize,
+			width,
+			height,
+			mediaType,
+		] of [
+			[
+				"A".repeat(64),
+				"artwork/invalid-uppercase.jpg",
+				1,
+				500,
+				500,
+				"image/jpeg",
+			],
+			[
+				"a".repeat(63),
+				"artwork/invalid-short.jpg",
+				1,
+				500,
+				500,
+				"image/jpeg",
+			],
+			[
+				"d".repeat(64),
+				"/artwork/absolute.jpg",
+				1,
+				500,
+				500,
+				"image/jpeg",
+			],
+			[
+				"e".repeat(64),
+				"artwork/negative.jpg",
+				-1,
+				500,
+				500,
+				"image/jpeg",
+			],
+			["f".repeat(64), "artwork/zero-width.jpg", 1, 0, 500, "image/jpeg"],
+			[
+				"1".repeat(64),
+				"artwork/zero-height.jpg",
+				1,
+				500,
+				0,
+				"image/jpeg",
+			],
+			["2".repeat(64), "artwork/png.jpg", 1, 500, 500, "image/png"],
+		] as const) {
+			expect(() =>
+				state.database.run(
+					"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, ?, ?, ?, 1)",
+					[sha256, relativePath, byteSize, width, height, mediaType],
+				),
+			).toThrow();
+		}
+
+		const invalid = insertImport(state);
+		expect(() =>
+			insertAutomaticArtwork(state, invalid.releaseId, "unknown", null),
+		).toThrow();
+		expect(() =>
+			insertAutomaticArtwork(state, invalid.releaseId, "selected", null),
+		).toThrow();
+		expect(() =>
+			insertAutomaticArtwork(
+				state,
+				invalid.releaseId,
+				"no_match",
+				cacheSha256,
+			),
+		).toThrow();
+		expect(() =>
+			insertAutomaticArtwork(
+				state,
+				invalid.releaseId,
+				"selected",
+				"a".repeat(64),
+			),
+		).toThrow();
+		state.close();
+	});
+
+	test("enforces explicit mutually exclusive source and cache entry origins", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		seed(state);
+		insertCacheObject(state);
+		state.database.run(
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
+		);
+
+		const invalidInserts = [
+			() =>
+				state.database.run(
+					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'mixed.jpg', 'cache', ?, ?, NULL, NULL, 'artwork')",
+					[ids[3], sourcePath, cacheSha256],
+				),
+			() =>
+				state.database.run(
+					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'missing.flac', 'source', NULL, NULL, 42, 1, 'audio')",
+					[ids[3]],
+				),
+			() =>
+				state.database.run(
+					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'wrong-kind.jpg', 'cache', NULL, ?, NULL, NULL, 'audio')",
+					[ids[3], cacheSha256],
+				),
+			() =>
+				state.database.run(
+					"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'mixed.jpg', 'cache', ?, ?, NULL, NULL, 'artwork')",
+					[ids[4], sourcePath, cacheSha256],
+				),
+			() =>
+				state.database.run(
+					"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'missing.flac', 'source', NULL, NULL, 42, 1, 'audio')",
+					[ids[4]],
+				),
+			() =>
+				state.database.run(
+					"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'wrong-kind.jpg', 'cache', NULL, ?, NULL, NULL, 'audio')",
+					[ids[4], cacheSha256],
+				),
+		];
+		for (const insert of invalidInserts) {
+			expect(insert).toThrow();
+		}
+		state.close();
+	});
+
+	test("protects cache objects referenced by outcomes and frozen entries", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		seed(state);
+		insertCacheObject(state);
+		insertAutomaticArtwork(state, ids[1], "selected", cacheSha256);
+		state.database.run(
+			"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'cover.jpg', 'cache', NULL, ?, NULL, NULL, 'artwork')",
+			[ids[3], cacheSha256],
+		);
+		state.database.run(
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
+		);
+		state.database.run(
+			"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, 'cover.jpg', 'cache', NULL, ?, NULL, NULL, 'artwork')",
+			[ids[4], cacheSha256],
+		);
+		expect(() =>
+			state.database.run(
+				"DELETE FROM artwork_cache_objects WHERE sha256 = ?",
+				[cacheSha256],
+			),
+		).toThrow();
+
+		state.database.run(
+			"DELETE FROM automatic_artwork WHERE source_release_id = ?",
+			[ids[1]],
+		);
+		state.database.run(
+			"DELETE FROM destination_entries WHERE destination_id = ?",
+			[ids[3]],
+		);
+		state.database.run(
+			"DELETE FROM operation_entries WHERE operation_id = ?",
+			[ids[4]],
+		);
+		expect(
+			state.database.run(
+				"DELETE FROM artwork_cache_objects WHERE sha256 = ?",
+				[cacheSha256],
+			).changes,
+		).toBe(1);
+		state.close();
+	});
+
+	test("indexes cache references and rejects an old schema", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		const details = state.database
+			.query<{ detail: string }, [string]>(
+				"EXPLAIN QUERY PLAN DELETE FROM artwork_cache_objects WHERE sha256 = ?",
+			)
+			.all(cacheSha256)
+			.map((row) => row.detail);
+		for (const table of [
+			"automatic_artwork",
+			"destination_entries",
+			"operation_entries",
+		]) {
+			expect(
+				details.some((detail) => detail.includes(`SCAN ${table}`)),
+			).toBe(false);
+		}
+		state.close();
+		await Promise.all([
+			rm(join(paths.state, DATABASE_FILE), { force: true }),
+			rm(join(paths.state, `${DATABASE_FILE}-wal`), { force: true }),
+			rm(join(paths.state, `${DATABASE_FILE}-shm`), { force: true }),
+		]);
+
+		const oldDatabase = new Database(join(paths.state, DATABASE_FILE));
+		oldDatabase.run("PRAGMA application_id = 1397577798");
+		oldDatabase.run("CREATE TABLE source_containers (id TEXT PRIMARY KEY)");
+		oldDatabase.close();
+		await expect(
+			openImportState({
+				stateRoot: paths.state,
+				generatedLibraryRoot: paths.generated,
+			}),
+		).rejects.toThrow("Incompatible SQLite library state");
 	});
 
 	test("enforces source/destination uniqueness and cascades", async () => {

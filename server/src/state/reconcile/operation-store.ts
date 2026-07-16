@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { ImportState } from "../import-state";
 import { immediate, nowNs } from "./database";
-import type { Desired, Entry, OperationRow } from "./types";
+import type { Desired, OperationRow, SourceEntry } from "./types";
 
 export type Existing = {
 	import_id: string;
@@ -32,7 +32,7 @@ export function existingFor(
 function insertOrUpdateSourceFiles(
 	state: ImportState,
 	releaseId: string,
-	entries: readonly Entry[],
+	entries: readonly SourceEntry[],
 ): void {
 	for (const entry of entries) {
 		state.database.run(
@@ -167,7 +167,7 @@ export function createOperation(
 		if (desired !== undefined) {
 			for (const entry of desired.entries) {
 				state.database.run(
-					"INSERT INTO operation_entries (operation_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
+					"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
 					[
 						id,
 						entry.destinationName,

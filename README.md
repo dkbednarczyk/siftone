@@ -31,9 +31,8 @@ Siftone is a Bun-first music-library management system. It watches a single Linu
 
 ```bash
 bun install
-bun run --cwd server test
-bun run --cwd server typecheck
-bun run --cwd server build:linux-x64
+bun run test
+bun run lint
 ```
 
 See the [server development guide](server/README.md) for configuration,

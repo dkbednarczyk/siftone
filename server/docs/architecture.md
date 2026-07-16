@@ -73,14 +73,18 @@ Normal startup is intentionally ordered as follows:
 
 ```text
 load and validate TOML
+  -> bind HTTP listener (health is degraded while startup runs)
   -> open SQLite ownership/state
   -> make a verified daily backup
   -> resume interrupted operations
   -> prepare a complete source snapshot
   -> reconcile snapshot with recorded output
   -> start the source watcher
-  -> expose /api/v1/health
+  -> report healthy /api/v1/health
 ```
+
+Binding the listener before import work makes an unavailable port fail startup
+without opening SQLite, writing a backup, or scanning and reconciling imports.
 
 Recovery happens before a fresh scan so an interrupted operation can be resolved
 from its durable record rather than guessed from whatever happens to be on disk.
@@ -166,8 +170,9 @@ The schema in `state/schema.ts` records:
 | Records | Architectural role |
 | --- | --- |
 | `source_containers`, `source_releases`, `source_files` | The observed source identity, availability, and immutable file fingerprint. |
-| `imports`, `published_destinations`, `destination_entries` | What Siftone owns and the exact published manifest it expects. |
-| `operations`, claims, and entries | A durable checkpoint for add/replace/delete/repair across a crash. |
+| `artwork_cache_objects`, `automatic_artwork` | Managed JPEG cache objects and durable automatic-artwork outcomes for source releases. |
+| `imports`, `published_destinations`, `destination_entries` | What Siftone owns and the exact published manifest it expects; entries explicitly identify immutable-source versus cache-object origin. |
+| `operations`, claims, and entries | A durable checkpoint for add/replace/delete/repair across a crash, with the same explicit entry origin. |
 | `reviews` and `reconciliation_state` | Conditions that need attention and whether observation is trustworthy enough to reconcile. |
 
 Persisted filesystem paths use canonical POSIX absolute form, enforced both by

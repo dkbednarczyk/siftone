@@ -5,7 +5,7 @@ import {
 } from "../canonical-path";
 import type { ImportState } from "../import-state";
 import { bigintRows } from "./database";
-import type { Entry } from "./types";
+import type { SourceEntry } from "./types";
 
 type StoredEntry = {
 	destination_name: string;
@@ -16,7 +16,7 @@ type StoredEntry = {
 	kind: "audio" | "artwork";
 };
 
-function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
+function storedEntriesToEntries(rows: readonly StoredEntry[]): SourceEntry[] {
 	return rows.map((row) => {
 		const sourcePath = canonicalAbsolutePath(row.source_path);
 		const rootPath = canonicalAbsolutePath(row.root_path);
@@ -35,6 +35,7 @@ function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
 		);
 
 		return {
+			origin: "source",
 			sourcePath,
 			relativeSourcePath,
 			destinationName: row.destination_name,
@@ -48,7 +49,7 @@ function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
 export function operationEntries(
 	state: ImportState,
 	operationId: string,
-): Entry[] {
+): SourceEntry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
 		SELECT oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.kind
@@ -56,7 +57,7 @@ export function operationEntries(
 		JOIN source_files sf ON sf.source_path = oe.source_path
 		JOIN source_releases sr ON sr.id = sf.source_release_id
 		JOIN source_containers sc ON sc.id = sr.container_id
-		WHERE oe.operation_id = ? ORDER BY oe.destination_name
+		WHERE oe.operation_id = ? AND oe.origin = 'source' ORDER BY oe.destination_name
 	`),
 		operationId,
 	);
@@ -80,7 +81,7 @@ export function priorDestination(
 export function destinationEntries(
 	state: ImportState,
 	importId: string,
-): Entry[] {
+): SourceEntry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
 		SELECT de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.kind
@@ -89,7 +90,7 @@ export function destinationEntries(
 		JOIN source_files sf ON sf.source_path = de.source_path
 		JOIN source_releases sr ON sr.id = sf.source_release_id
 		JOIN source_containers sc ON sc.id = sr.container_id
-		WHERE pd.import_id = ? ORDER BY de.destination_name
+		WHERE pd.import_id = ? AND de.origin = 'source' ORDER BY de.destination_name
 	`),
 		importId,
 	);

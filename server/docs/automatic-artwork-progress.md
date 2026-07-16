@@ -7,7 +7,8 @@ can distinguish completed work from approved but unimplemented scope.
 ## Status
 
 - Approved by user: 2026-07-16
-- Current phase: 3 — SQLite state evolution is next.
+- Current phase: 4 — Thread `cacheRoot` through reconciliation, staging,
+  recovery, snapshots, and finalization next.
 - Phase 1 completed: source output is deleted immediately after a complete scan
   confirms the source release is absent; uncertain observations remain
   non-destructive.
@@ -130,8 +131,14 @@ can distinguish completed work from approved but unimplemented scope.
       integration, and mocked module tests. Full server validation (114 tests),
       typecheck, Biome, frozen install, compiled build, isolated no-contact
       execution, and `git diff --check` passed.
-- [ ] Phase 3 — Update SQLite schema for cache objects, automatic-artwork
-      outcomes, and explicit source/cache entry origins; update state tests.
+- [x] Phase 3 — Added destructive SQLite schema support for JPEG cache objects,
+      automatic-artwork outcomes, and mutually exclusive source/cache-origin
+      snapshots. Cache references are indexed and restrictive; source snapshots
+      remain frozen without source-file FKs. Added discriminated entry origins,
+      source-only runtime compatibility, old-schema rejection, constraint/FK/
+      integrity coverage, and cache-reference deletion tests. Focused state and
+      reconciliation tests, full server tests (126), typecheck, Biome, frozen
+      install, Linux builds, isolated compiled dry-run, and diff check passed.
 - [ ] Phase 4 — Thread `cacheRoot` through reconciliation, operation staging,
       recovery, snapshots, and finalization; ensure cache entries never depend
       on `source_files`.
