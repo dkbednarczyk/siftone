@@ -67,6 +67,15 @@ function resolveLimit(value: number | undefined, fallback: number): number {
 	return limit;
 }
 
+function resolveLimits(
+	limits: CandidateDiscoveryLimits,
+): Required<CandidateDiscoveryLimits> {
+	return {
+		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
+		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
+	};
+}
+
 async function discoverSourcePaths(
 	directory: string,
 	depth: number,
@@ -177,10 +186,7 @@ export async function discoverCandidate(
 	candidate?: DiscoveredCandidate;
 	issues: CandidateDiscoveryIssue[];
 }> {
-	const resolvedLimits: Required<CandidateDiscoveryLimits> = {
-		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
-		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
-	};
+	const resolvedLimits = resolveLimits(limits);
 
 	const issues: CandidateDiscoveryIssue[] = [];
 	let status: Stats;
@@ -230,10 +236,7 @@ export async function discoverCandidates(
 	watchRoot: string,
 	limits: CandidateDiscoveryLimits = {},
 ): Promise<CandidateDiscoveryResult> {
-	const resolvedLimits: Required<CandidateDiscoveryLimits> = {
-		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
-		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
-	};
+	const resolvedLimits = resolveLimits(limits);
 
 	const entries = await readdir(watchRoot, { withFileTypes: true });
 
