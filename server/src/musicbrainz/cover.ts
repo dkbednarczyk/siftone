@@ -85,10 +85,7 @@ async function readBoundedBytes(
 	response: Response,
 ): Promise<Uint8Array | undefined> {
 	const declaredLength = Number(response.headers.get("content-length"));
-	if (
-		Number.isFinite(declaredLength) &&
-		declaredLength > MAX_COVER_BYTES
-	) {
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_COVER_BYTES) {
 		return undefined;
 	}
 

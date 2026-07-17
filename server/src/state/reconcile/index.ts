@@ -109,9 +109,10 @@ export async function reconcileImports({
 
 	const desiredKeys = new Map<string, Set<string>>();
 	const scheduled: OperationRow[] = [];
-	const existingOperationQuery = state.database.query<{ id: string }, [string]>(
-		"SELECT id FROM operations WHERE import_id = ?",
-	);
+	const existingOperationQuery = state.database.query<
+		{ id: string },
+		[string]
+	>("SELECT id FROM operations WHERE import_id = ?");
 
 	for (const item of desired) {
 		const releaseKeys =
