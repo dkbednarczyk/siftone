@@ -2,7 +2,6 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { canonicalAbsolutePath, isPathWithinRoot } from "../../path-utils";
 import type { PublicationInput } from "../../publication/publish";
-import { mapBounded } from "../../util/util";
 import type { ImportState } from "../import-state";
 import { ensurePublicationRoots, isOwnedPublicLeaf } from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
@@ -16,8 +15,6 @@ import {
 } from "./operation-store";
 import type { OperationRow } from "./types";
 import { collectRetiredVersions } from "./version-gc";
-
-const OPERATION_CONCURRENCY = 4;
 
 function containerKey(watchRoot: string, path: string): string {
 	const containerPath = canonicalAbsolutePath(
@@ -59,19 +56,16 @@ export async function recoverInterruptedOperations({
 		)
 		.all();
 
-	await mapBounded(
-		operations,
-		(operation) =>
-			executeOperation(
-				state,
-				generatedLibraryRoot,
-				stagingRoot,
-				versionRoot,
-				cacheRoot,
-				operation,
-			),
-		OPERATION_CONCURRENCY,
-	);
+	for (const operation of operations) {
+		await executeOperation(
+			state,
+			generatedLibraryRoot,
+			stagingRoot,
+			versionRoot,
+			cacheRoot,
+			operation,
+		);
+	}
 	await collectRetiredVersions(
 		state,
 		generatedLibraryRoot,
@@ -112,9 +106,11 @@ export async function reconcileImports({
 		versionRoot,
 	);
 
-	const desired = await mapBounded(inputs, (input) =>
-		desiredFor(watchRoot, generatedLibraryRoot, input),
-	);
+	const desired = [];
+
+	for (const input of inputs) {
+		desired.push(await desiredFor(watchRoot, generatedLibraryRoot, input));
+	}
 
 	const desiredKeys = new Map<string, Set<string>>();
 	const scheduled: OperationRow[] = [];
@@ -298,19 +294,16 @@ export async function reconcileImports({
 			);
 		}
 	}
-	await mapBounded(
-		scheduled,
-		(operation) =>
-			executeOperation(
-				state,
-				generatedLibraryRoot,
-				stagingRoot,
-				versionRoot,
-				cacheRoot,
-				operation,
-			),
-		OPERATION_CONCURRENCY,
-	);
+	for (const operation of scheduled) {
+		await executeOperation(
+			state,
+			generatedLibraryRoot,
+			stagingRoot,
+			versionRoot,
+			cacheRoot,
+			operation,
+		);
+	}
 	await collectRetiredVersions(
 		state,
 		generatedLibraryRoot,

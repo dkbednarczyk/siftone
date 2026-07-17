@@ -18,11 +18,7 @@ import {
 	sep,
 } from "node:path";
 import { isDescendant, isMissingError, isRealDirectory } from "../path-utils";
-import { mapBounded } from "../util/util";
 import type { PlannedSymlink } from "./plan";
-
-const ALBUM_STAGING_CONCURRENCY = 4;
-const ENTRY_IO_CONCURRENCY = 8;
 
 export type AutomaticArtworkStatus =
 	| "disabled"
@@ -136,16 +132,17 @@ async function exactEntries(
 		if (output.length !== expected.size) {
 			return false;
 		}
-		return (
-			await mapBounded(
-				output,
-				async (entry) =>
-					entry.isSymbolicLink() &&
-					expected.get(entry.name) ===
-						(await readlink(join(path, entry.name))),
-				ENTRY_IO_CONCURRENCY,
-			)
-		).every(Boolean);
+		for (const entry of output) {
+			if (
+				!entry.isSymbolicLink() ||
+				expected.get(entry.name) !==
+					(await readlink(join(path, entry.name)))
+			) {
+				return false;
+			}
+		}
+
+		return true;
 	} catch {
 		return false;
 	}
@@ -210,22 +207,18 @@ async function inspectRoot(
 }
 async function stageAlbum(path: string, album: AlbumPlan): Promise<void> {
 	await mkdir(path);
-	await mapBounded(
-		album.entries,
-		async (entry) => {
-			const source = await lstat(entry.sourcePath);
-			if (!source.isFile() || source.isSymbolicLink()) {
-				throw new PublicationError(
-					`Planned source is not a real file: ${entry.sourcePath}`,
-				);
-			}
-			await symlink(
-				entry.sourcePath,
-				join(path, basename(entry.destinationPath)),
+	for (const entry of album.entries) {
+		const source = await lstat(entry.sourcePath);
+		if (!source.isFile() || source.isSymbolicLink()) {
+			throw new PublicationError(
+				`Planned source is not a real file: ${entry.sourcePath}`,
 			);
-		},
-		ENTRY_IO_CONCURRENCY,
-	);
+		}
+		await symlink(
+			entry.sourcePath,
+			join(path, basename(entry.destinationPath)),
+		);
+	}
 }
 
 /** A standalone publisher with the same immutable-version/public-leaf swap protocol as reconciliation. */
@@ -292,49 +285,39 @@ export async function publishPlans({
 	}
 	const operation = await mkdtemp(join(stagingRoot, "publication-"));
 	try {
-		await mapBounded(
-			pending.map((album, index) => ({ album, index })),
-			({ album, index }) =>
-				stageAlbum(join(operation, String(index)), album),
-			ALBUM_STAGING_CONCURRENCY,
-		);
+		for (const [index, album] of pending.entries()) {
+			await stageAlbum(join(operation, String(index)), album);
+		}
 		await beforeCommit?.();
-		await mapBounded(
-			pending.map((album, index) => ({ album, index })),
-			async ({ album, index }) => {
-				await beforePublishAlbum?.(album.path);
-				await mkdir(album.artistPath, { recursive: true });
-				if (!(await isRealDirectory(album.artistPath))) {
-					throw new PublicationError(
-						`Generated artist path is unsafe: ${album.artistPath}`,
-					);
-				}
-				const version = join(
-					versionRoot,
-					`${basename(operation)}-${index}`,
+		for (const [index, album] of pending.entries()) {
+			await beforePublishAlbum?.(album.path);
+			await mkdir(album.artistPath, { recursive: true });
+			if (!(await isRealDirectory(album.artistPath))) {
+				throw new PublicationError(
+					`Generated artist path is unsafe: ${album.artistPath}`,
 				);
-				await rename(join(operation, String(index)), version);
-				const temporary = join(
-					dirname(album.path),
-					`.siftone-link-${basename(operation)}-${index}`,
+			}
+			const version = join(
+				versionRoot,
+				`${basename(operation)}-${index}`,
+			);
+			await rename(join(operation, String(index)), version);
+			const temporary = join(
+				dirname(album.path),
+				`.siftone-link-${basename(operation)}-${index}`,
+			);
+			await symlink(relative(dirname(album.path), version), temporary);
+			const existing = await status(album.path);
+			if (
+				existing !== undefined &&
+				(await ownedLeaf(album.path, versionRoot)) === undefined
+			) {
+				throw new PublicationError(
+					`Generated album appeared during publication: ${album.path}`,
 				);
-				await symlink(
-					relative(dirname(album.path), version),
-					temporary,
-				);
-				const existing = await status(album.path);
-				if (
-					existing !== undefined &&
-					(await ownedLeaf(album.path, versionRoot)) === undefined
-				) {
-					throw new PublicationError(
-						`Generated album appeared during publication: ${album.path}`,
-					);
-				}
-				await rename(temporary, album.path);
-			},
-			1,
-		);
+			}
+			await rename(temporary, album.path);
+		}
 	} finally {
 		await rm(operation, { recursive: true, force: true });
 	}

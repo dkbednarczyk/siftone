@@ -1,3 +1,4 @@
+import pRetry from "p-retry";
 import type { TaskScheduler } from "./scheduler";
 
 export class HttpError extends Error {
@@ -42,6 +43,19 @@ export function retryAfterMs(
 	return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
+function retryBackoffDelayMs(
+	attemptNumber: number,
+	random: () => number,
+): number {
+	return Math.round(1_000 * 2 ** (attemptNumber - 1) * (0.5 + random()));
+}
+
+class TransientRequestError extends Error {
+	constructor(readonly originalError: unknown) {
+		super("Transient request failure", { cause: originalError });
+	}
+}
+
 export async function retryTransient<T>({
 	task,
 	scheduler,
@@ -63,28 +77,35 @@ export async function retryTransient<T>({
 		throw new Error("maxAttempts must be a positive safe integer");
 	}
 
-	let failure: unknown;
-
-	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-		onAttempt?.(attempt);
-		try {
+	return await pRetry(
+		async (attempt) => {
+			onAttempt?.(attempt);
 			return await scheduler.run(() => task(attempt));
-		} catch (error) {
-			failure = error;
-			if (!isTransient(error) || attempt === maxAttempts) {
-				throw error;
-			}
+		},
+		{
+			retries: maxAttempts - 1,
+			minTimeout: 0,
+			maxTimeout: 0,
+			onFailedAttempt: async ({ error, attemptNumber, retriesLeft }) => {
+				if (
+					!(error instanceof TransientRequestError) ||
+					retriesLeft === 0
+				) {
+					return;
+				}
 
-			const retryAfter =
-				error instanceof HttpError
-					? retryAfterMs(error.retryAfter, now())
-					: undefined;
-			await sleep(
-				retryAfter ??
-					Math.round(1_000 * 2 ** (attempt - 1) * (0.5 + random())),
-			);
-		}
-	}
+				const originalError = error.originalError;
 
-	throw failure;
+				const retryAfter =
+					originalError instanceof HttpError
+						? retryAfterMs(originalError.retryAfter, now())
+						: undefined;
+
+				await sleep(
+					retryAfter ?? retryBackoffDelayMs(attemptNumber, random),
+				);
+			},
+			shouldRetry: ({ error }) => error instanceof TransientRequestError,
+		},
+	);
 }

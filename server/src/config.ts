@@ -37,13 +37,6 @@ export type ConfigLoadOptions = Readonly<{
 	homeDirectory?: string;
 }>;
 
-export class ConfigError extends Error {
-	constructor(message: string, options?: ErrorOptions) {
-		super(message, options);
-		this.name = "ConfigError";
-	}
-}
-
 const DEFAULT_PORT = 3000;
 const DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 300;
 
@@ -86,8 +79,6 @@ type PathField =
 	| "state_root"
 	| "backup_root";
 
-const configError = (message: string): ConfigError => new ConfigError(message);
-
 export function resolveConfigPath({
 	configPath,
 	cwd = process.cwd(),
@@ -100,17 +91,9 @@ async function resolveConfigDirectory(
 	field: PathField,
 ): Promise<string> {
 	try {
-		return await resolveExistingDirectory(
-			value,
-			`paths.${field}`,
-			configError,
-		);
+		return await resolveExistingDirectory(value, `paths.${field}`);
 	} catch (error) {
-		if (error instanceof ConfigError) {
-			throw error;
-		}
-
-		throw new ConfigError(`Cannot resolve paths.${field}`, {
+		throw new Error(`Cannot resolve paths.${field}`, {
 			cause: error,
 		});
 	}
@@ -121,17 +104,9 @@ async function createConfigDirectory(
 	field: PathField,
 ): Promise<string> {
 	try {
-		return await createAndResolveDirectory(
-			value,
-			`paths.${field}`,
-			configError,
-		);
+		return await createAndResolveDirectory(value, `paths.${field}`);
 	} catch (error) {
-		if (error instanceof ConfigError) {
-			throw error;
-		}
-
-		throw new ConfigError(`Cannot create paths.${field}`, { cause: error });
+		throw new Error(`Cannot create paths.${field}`, { cause: error });
 	}
 }
 
@@ -190,7 +165,7 @@ function validateNoOverlaps(paths: ServerPaths): void {
 				) &&
 				pathsOverlap
 			) {
-				throw new ConfigError(
+				throw new Error(
 					`paths.${firstName} and paths.${secondName} must not overlap`,
 				);
 			}
@@ -208,17 +183,14 @@ async function parsePaths(
 		watchRoot: validateAbsolutePath(
 			config.paths.watch_root,
 			"paths.watch_root",
-			configError,
 		),
 		generatedLibraryRoot: validateAbsolutePath(
 			config.paths.generated_library_root,
 			"paths.generated_library_root",
-			configError,
 		),
 		cacheRoot: validateAbsolutePath(
 			config.paths.cache_root ?? join(dataRoot, "cache"),
 			"paths.cache_root",
-			configError,
 		),
 		stagingRoot: validateAbsolutePath(
 			config.paths.staging_root ??
@@ -228,7 +200,6 @@ async function parsePaths(
 					"staging",
 				),
 			"paths.staging_root",
-			configError,
 		),
 		versionRoot: validateAbsolutePath(
 			config.paths.version_root ??
@@ -238,17 +209,14 @@ async function parsePaths(
 					"versions",
 				),
 			"paths.version_root",
-			configError,
 		),
 		stateRoot: validateAbsolutePath(
 			config.paths.state_root ?? join(dataRoot, "state"),
 			"paths.state_root",
-			configError,
 		),
 		backupRoot: validateAbsolutePath(
 			config.paths.backup_root ?? join(dataRoot, "backups"),
 			"paths.backup_root",
-			configError,
 		),
 	};
 
@@ -271,7 +239,7 @@ async function parsePaths(
 	);
 
 	if (generatedLibraryRoot === resolve(homeDirectory)) {
-		throw new ConfigError(
+		throw new Error(
 			"paths.generated_library_root must not be the home directory because .siftone is global state",
 		);
 	}
@@ -322,7 +290,7 @@ export async function loadServerConfig(
 	try {
 		contents = await Bun.file(configPath).text();
 	} catch (error) {
-		throw new ConfigError(`Cannot read configuration file ${configPath}`, {
+		throw new Error(`Cannot read configuration file ${configPath}`, {
 			cause: error,
 		});
 	}
@@ -332,7 +300,7 @@ export async function loadServerConfig(
 	try {
 		parsed = Bun.TOML.parse(contents);
 	} catch (error) {
-		throw new ConfigError(`Invalid TOML in ${configPath}`, {
+		throw new Error(`Invalid TOML in ${configPath}`, {
 			cause: error,
 		});
 	}
@@ -343,12 +311,9 @@ export async function loadServerConfig(
 			.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
 			.join("; ");
 
-		throw new ConfigError(
-			`Invalid configuration in ${configPath}: ${issues}`,
-			{
-				cause: result.error.issues,
-			},
-		);
+		throw new Error(`Invalid configuration in ${configPath}: ${issues}`, {
+			cause: result.error.issues,
+		});
 	}
 
 	return {

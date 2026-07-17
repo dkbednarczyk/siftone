@@ -8,49 +8,44 @@ import {
 	isPathWithinRoot,
 } from "../path-utils";
 import type { PublicationInput } from "../publication/publish";
-import { mapBounded } from "../util/util";
 import { entryPath } from "./entry-path";
 import type { Desired, Entry } from "./reconcile/types";
 
-const SOURCE_STAT_CONCURRENCY = 8;
-
-function kindFor(path: string): "audio" | "artwork" {
+function audioOrArtwork(path: string): "audio" | "artwork" {
 	return [".flac", ".mp3"].includes(extname(path).toLowerCase())
 		? "audio"
 		: "artwork";
 }
 
+function manifestEntry(entry: Entry): readonly string[] {
+	if (entry.origin === "source") {
+		return [
+			entry.origin,
+			entry.relativeSourcePath,
+			entry.destinationName,
+			entry.size.toString(),
+			entry.mtimeNs.toString(),
+			entry.kind,
+		];
+	}
+
+	return [
+		entry.origin,
+		entry.cacheSha256,
+		entry.cacheRelativePath,
+		entry.destinationName,
+		entry.kind,
+	];
+}
+
 export function manifestHash(entries: readonly Entry[]): string {
-	return createHash("sha256")
-		.update(
-			JSON.stringify(
-				entries
-					.toSorted((first, second) =>
-						first.destinationName.localeCompare(
-							second.destinationName,
-						),
-					)
-					.map((entry) =>
-						entry.origin === "source"
-							? [
-									entry.origin,
-									entry.relativeSourcePath,
-									entry.destinationName,
-									entry.size.toString(),
-									entry.mtimeNs.toString(),
-									entry.kind,
-								]
-							: [
-									entry.origin,
-									entry.cacheSha256,
-									entry.cacheRelativePath,
-									entry.destinationName,
-									entry.kind,
-								],
-					),
-			),
+	const manifest = entries
+		.toSorted((lhs, rhs) =>
+			lhs.destinationName.localeCompare(rhs.destinationName),
 		)
-		.digest("hex");
+		.map(manifestEntry);
+
+	return createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
 }
 
 export async function desiredFor(
@@ -76,51 +71,45 @@ export async function desiredFor(
 		);
 	}
 
-	const entries: Entry[] = await mapBounded(
-		input.entries,
-		async (entry) => {
-			const sourcePath = canonicalAbsolutePath(entry.sourcePath);
-			if (!isPathWithinRoot(containerPath, sourcePath)) {
-				throw new Error(
-					`Source file escapes its container: ${entry.sourcePath}`,
-				);
-			}
+	const entries: Entry[] = [];
 
-			const relativeSourcePath = canonicalRelativePath(
-				relative(containerPath, sourcePath).replaceAll("\\", "/"),
+	for (const entry of input.entries) {
+		const sourcePath = canonicalAbsolutePath(entry.sourcePath);
+		if (!isPathWithinRoot(containerPath, sourcePath)) {
+			throw new Error(
+				`Source file escapes its container: ${entry.sourcePath}`,
 			);
+		}
 
-			const destinationName = basename(entry.destinationPath);
-			if (
-				destinationName.includes("/") ||
-				destinationName.includes("\\") ||
-				dirname(entry.destinationPath) !== destination
-			) {
-				throw new Error(
-					`Unsafe publication entry: ${entry.sourcePath}`,
-				);
-			}
+		const relativeSourcePath = canonicalRelativePath(
+			relative(containerPath, sourcePath).replaceAll("\\", "/"),
+		);
 
-			const status = await lstat(entry.sourcePath, { bigint: true });
+		const destinationName = basename(entry.destinationPath);
+		if (
+			destinationName.includes("/") ||
+			destinationName.includes("\\") ||
+			dirname(entry.destinationPath) !== destination
+		) {
+			throw new Error(`Unsafe publication entry: ${entry.sourcePath}`);
+		}
 
-			if (!status.isFile() || status.isSymbolicLink()) {
-				throw new Error(
-					`Source is not a real file: ${entry.sourcePath}`,
-				);
-			}
+		const status = await lstat(entry.sourcePath, { bigint: true });
 
-			return {
-				origin: "source",
-				sourcePath,
-				relativeSourcePath,
-				destinationName,
-				size: status.size,
-				mtimeNs: status.mtimeNs,
-				kind: kindFor(entry.sourcePath),
-			};
-		},
-		SOURCE_STAT_CONCURRENCY,
-	);
+		if (!status.isFile() || status.isSymbolicLink()) {
+			throw new Error(`Source is not a real file: ${entry.sourcePath}`);
+		}
+
+		entries.push({
+			origin: "source",
+			sourcePath,
+			relativeSourcePath,
+			destinationName,
+			size: status.size,
+			mtimeNs: status.mtimeNs,
+			kind: audioOrArtwork(entry.sourcePath),
+		});
+	}
 
 	if (input.automaticArtwork?.status === "selected") {
 		const cacheObject = input.automaticArtwork.cacheObject;

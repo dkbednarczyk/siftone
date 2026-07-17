@@ -1,12 +1,6 @@
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
 
-export type PathErrorFactory = (message: string) => Error;
-
-function invalidPathError(message: string): Error {
-	return new Error(message);
-}
-
 function usesInvalidSlash(value: string): boolean {
 	return value.includes("\\") || (sep !== "/" && value.includes(sep));
 }
@@ -123,14 +117,13 @@ export function isPathBelowRoot(root: string, path: string): boolean {
 export function validateAbsolutePath(
 	value: string,
 	description: string,
-	createError: PathErrorFactory = invalidPathError,
 ): string {
 	if (value.trim() === "") {
-		throw createError(`${description} must be a non-empty absolute path`);
+		throw Error(`${description} must be a non-empty absolute path`);
 	}
 
 	if (!isAbsolute(value)) {
-		throw createError(`${description} must be an absolute path`);
+		throw Error(`${description} must be an absolute path`);
 	}
 
 	return normalize(value);
@@ -139,14 +132,14 @@ export function validateAbsolutePath(
 export async function resolveExistingDirectory(
 	value: string,
 	description: string,
-	createError: PathErrorFactory = invalidPathError,
 ): Promise<string> {
-	const path = validateAbsolutePath(value, description, createError);
+	const path = validateAbsolutePath(value, description);
+
 	const canonicalPath = await realpath(path);
 	const status = await stat(canonicalPath);
 
 	if (!status.isDirectory()) {
-		throw createError(`${description} must be a directory`);
+		throw Error(`${description} must be a directory`);
 	}
 
 	return canonicalPath;
@@ -155,9 +148,8 @@ export async function resolveExistingDirectory(
 export async function createAndResolveDirectory(
 	value: string,
 	description: string,
-	createError: PathErrorFactory = invalidPathError,
 ): Promise<string> {
-	const path = validateAbsolutePath(value, description, createError);
+	const path = validateAbsolutePath(value, description);
 	await mkdir(path, { recursive: true });
 
 	return realpath(path);

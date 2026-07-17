@@ -1,4 +1,3 @@
-import { imageSize } from "image-size";
 import type { IImage } from "musicbrainz-api";
 import { HttpError, isTransient, retryTransient } from "./retry";
 import type { TaskScheduler } from "./scheduler";
@@ -150,25 +149,15 @@ async function downloadThumbnail(
 				transientFailure: isTransient(new HttpError(response.status)),
 			};
 		}
-		if (
-			!response.headers
-				.get("content-type")
-				?.toLowerCase()
-				.startsWith("image/jpeg")
-		) {
-			return { transientFailure: false };
-		}
 
 		const bytes = await readBoundedBytes(response);
 		if (bytes === undefined) {
 			return { transientFailure: false };
 		}
 
-		const dimensions = imageSize(bytes);
+		const dimensions = await new Bun.Image(bytes).metadata();
 		if (
-			dimensions.type !== "jpg" ||
-			dimensions.width === undefined ||
-			dimensions.height === undefined ||
+			dimensions.format !== "jpeg" ||
 			dimensions.width < MINIMUM_COVER_DIMENSION ||
 			dimensions.height < MINIMUM_COVER_DIMENSION
 		) {

@@ -1,9 +1,7 @@
 import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { errorMessage, mapBounded } from "../util/util";
-
-const DISCOVERY_CONCURRENCY = 8;
+import { errorMessage } from "../util/util";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([".flac", ".mp3"]);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
@@ -245,15 +243,12 @@ export async function discoverCandidates(
 		.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
 		.map((entry) => join(watchRoot, entry.name));
 
-	const results = await mapBounded(
-		roots,
-		(root) => discoverCandidate(root, resolvedLimits),
-		DISCOVERY_CONCURRENCY,
-	);
-
 	const candidates: DiscoveredCandidate[] = [];
 	const issues: CandidateDiscoveryIssue[] = [];
-	for (const result of results) {
+
+	for (const root of roots) {
+		const result = await discoverCandidate(root, resolvedLimits);
+
 		issues.push(...result.issues);
 
 		if (result.candidate !== undefined) {

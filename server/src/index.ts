@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { Command, Option } from "commander";
+import prettyMilliseconds from "pretty-ms";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
 import {
@@ -22,7 +23,6 @@ import {
 	type ReconciliationScheduler,
 	startSourceWatcher,
 } from "./state/watcher";
-import { formatDuration } from "./util/duration";
 
 export type ServerCommandOptions = Readonly<{
 	config?: string;
@@ -62,7 +62,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 	let ready = false;
 
 	const server = createApp(
-		() => (ready && state?.isDegraded() === false ? "ok" : "degraded"),
+		() => (ready && state?.isDegraded() ? "degraded" : "ok"),
 		() => watcher,
 	).listen({ hostname: "127.0.0.1", port: config.port });
 
@@ -190,7 +190,15 @@ async function runServer(config: ServerConfig): Promise<void> {
 				});
 
 				console.info(
-					`Took ${formatDuration(performance.now() - reconciliationStartedAt)} to reconcile ${inputs.length} desired import(s) from periodic source scan.`,
+					`Took ${prettyMilliseconds(
+						Math.max(
+							0,
+							Math.round(
+								performance.now() - reconciliationStartedAt,
+							),
+						),
+						{ separateMilliseconds: true },
+					)} to reconcile ${inputs.length} desired import(s) from periodic source scan.`,
 				);
 			},
 			onFailure: (error) =>

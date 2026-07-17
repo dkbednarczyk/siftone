@@ -16,16 +16,12 @@ import {
 	readAudioTags,
 } from "../metadata/tags";
 import { isDescendant } from "../path-utils";
-import { mapBounded } from "../util/util";
 import {
 	type PlannedSymlink,
 	type PublicationPlanIssue,
 	planPublication,
 } from "./plan";
 import type { PublicationInput } from "./publish";
-
-const PREPARATION_CONCURRENCY = 4;
-const TAG_READER_CONCURRENCY = 8;
 
 export type PreparedCandidate =
 	| Readonly<{
@@ -245,21 +241,15 @@ export async function splitTagGroups(
 	const tags = new Map<string, CachedTagRead>();
 	const groups: string[][] = [];
 	const groupedPaths = new Map<string, string[]>();
-	const reads = await mapBounded(
-		candidate.audioPaths,
-		async (path) => {
-			try {
-				return {
-					path,
-					result: { ok: true, tags: await readTags(path) },
-				} as const;
-			} catch (error) {
-				return { path, result: { ok: false, error } } as const;
-			}
-		},
-		TAG_READER_CONCURRENCY,
-	);
-	for (const { path, result } of reads) {
+	for (const path of candidate.audioPaths) {
+		let result: CachedTagRead;
+
+		try {
+			result = { ok: true, tags: await readTags(path) };
+		} catch (error) {
+			result = { ok: false, error };
+		}
+
 		tags.set(path, result);
 
 		if (!result.ok) {
@@ -399,11 +389,13 @@ export async function preparePublication(
 		}
 	}
 
-	const preparedContainers = await mapBounded(
-		discovery.candidates,
-		(container) => prepareContainer(container, generatedLibraryRoot),
-		PREPARATION_CONCURRENCY,
-	);
+	const preparedContainers: PreparedContainer[] = [];
+
+	for (const container of discovery.candidates) {
+		preparedContainers.push(
+			await prepareContainer(container, generatedLibraryRoot),
+		);
+	}
 
 	for (const [index, prepared] of preparedContainers.entries()) {
 		candidates.push(...prepared.candidates);

@@ -8,8 +8,6 @@ import {
 	isSameOrDescendant,
 } from "../path-utils";
 
-export class InvalidOperationState extends Error {}
-
 export async function isMissing(path: string): Promise<boolean> {
 	try {
 		await lstat(path);
@@ -30,9 +28,7 @@ export async function ensurePublicationRoots(
 ): Promise<void> {
 	for (const root of [generatedLibraryRoot, stagingRoot, versionRoot]) {
 		if (!(await isRealDirectory(root))) {
-			throw new InvalidOperationState(
-				`Managed root must be a real directory: ${root}`,
-			);
+			throw new Error(`Managed root must be a real directory: ${root}`);
 		}
 	}
 
@@ -43,7 +39,7 @@ export async function ensurePublicationRoots(
 	]);
 
 	if (generated.dev !== staging.dev || generated.dev !== versions.dev) {
-		throw new InvalidOperationState(
+		throw new Error(
 			"Staging, version, and generated roots must share a filesystem",
 		);
 	}
@@ -56,17 +52,13 @@ export async function ensureDestinationParent(
 	const parent = dirname(destination);
 
 	if (!isSameOrDescendant(generatedLibraryRoot, parent)) {
-		throw new InvalidOperationState(
-			"Destination escapes generated-library root",
-		);
+		throw new Error("Destination escapes generated-library root");
 	}
 
 	await mkdir(parent, { recursive: true });
 
 	if (!(await isRealDirectory(parent))) {
-		throw new InvalidOperationState(
-			`Destination parent is unsafe: ${parent}`,
-		);
+		throw new Error(`Destination parent is unsafe: ${parent}`);
 	}
 }
 
@@ -83,19 +75,18 @@ export function operationPaths(
 	const staging = canonicalAbsolutePath(stagingPath);
 
 	if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
-		throw new InvalidOperationState(
-			"Destination escapes generated-library root",
-		);
+		throw new Error("Destination escapes generated-library root");
 	}
 
 	if (!isPathBelowRoot(stagingRoot, staging)) {
-		throw new InvalidOperationState("Staging path escapes staging root");
+		throw new Error("Staging path escapes staging root");
 	}
 
 	const version =
 		versionPath === null ? null : canonicalAbsolutePath(versionPath);
+
 	if (version !== null && !isPathBelowRoot(versionRoot, version)) {
-		throw new InvalidOperationState("Version path escapes version root");
+		throw new Error("Version path escapes version root");
 	}
 
 	return {
@@ -114,8 +105,9 @@ export function relativeVersionTarget(
 	version: string,
 ): string {
 	const target = relative(dirname(destination), version);
+
 	if (target === "" || isAbsolute(target)) {
-		throw new InvalidOperationState("Unsafe relative version target");
+		throw new Error("Unsafe relative version target");
 	}
 
 	return target;
@@ -141,6 +133,7 @@ export async function isOwnedPublicLeaf(
 		const resolved = canonicalAbsolutePath(
 			resolve(dirname(destination), target),
 		);
+
 		if (resolved !== version || !isPathBelowRoot(versionRoot, resolved)) {
 			return false;
 		}

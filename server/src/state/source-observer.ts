@@ -2,11 +2,9 @@ import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
-import { mapBounded } from "../util/util";
 
 const MAX_DEPTH = 8;
 const MAX_ENTRIES = 10_000;
-const OBSERVATION_CONCURRENCY = 8;
 const MEDIA_EXTENSIONS = new Set([".flac", ".mp3", ".jpg", ".jpeg", ".png"]);
 
 export type ContainerObservation = Readonly<{
@@ -115,11 +113,11 @@ export async function observeSource(
 		.toSorted((left, right) => left.name.localeCompare(right.name))
 		.map((entry) => join(watchRoot, entry.name));
 
-	const containers = await mapBounded(
-		paths,
-		observeContainer,
-		OBSERVATION_CONCURRENCY,
-	);
+	const containers: ContainerObservation[] = [];
+
+	for (const path of paths) {
+		containers.push(await observeContainer(path));
+	}
 	const issues = containers
 		.filter((container) => container.outcome !== "present")
 		.map(

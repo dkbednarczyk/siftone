@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import { mapBounded } from "../../util/util";
 import { entryPath } from "../entry-path";
 import type { ImportState } from "../import-state";
 import {
 	ensureDestinationParent,
-	InvalidOperationState,
 	isMissing,
 	isOwnedPublicLeaf,
 	operationPaths,
@@ -16,8 +14,6 @@ import { entriesMatch, manifestHash } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
 import { operationEntries } from "./operation-entries";
 import type { Entry, OperationRow } from "./types";
-
-const ENTRY_IO_CONCURRENCY = 8;
 
 type PriorVersion = Readonly<{
 	destination_path: string;
@@ -29,17 +25,17 @@ async function validateCacheEntries(
 	entries: readonly Entry[],
 	cacheRoot: string,
 ): Promise<void> {
-	await mapBounded(
-		entries.filter((entry) => entry.origin === "cache"),
-		async (entry) => {
-			const path = entryPath(entry, cacheRoot);
-			const status = await lstat(path);
-			if (!status.isFile() || status.isSymbolicLink()) {
-				throw new Error(`Cache object is not a real file: ${path}`);
-			}
-		},
-		ENTRY_IO_CONCURRENCY,
-	);
+	for (const entry of entries) {
+		if (entry.origin !== "cache") {
+			continue;
+		}
+
+		const path = entryPath(entry, cacheRoot);
+		const status = await lstat(path);
+		if (!status.isFile() || status.isSymbolicLink()) {
+			throw new Error(`Cache object is not a real file: ${path}`);
+		}
+	}
 }
 
 async function stage(
@@ -49,38 +45,29 @@ async function stage(
 ): Promise<void> {
 	await rm(path, { recursive: true, force: true });
 
-	await mapBounded(
-		entries,
-		async (entry) => {
-			const path = entryPath(entry, cacheRoot);
-			const status = await lstat(path, { bigint: true });
-			if (!status.isFile() || status.isSymbolicLink()) {
-				throw new Error(
-					`Publication entry is not a real file: ${path}`,
-				);
-			}
-			if (
-				entry.origin === "source" &&
-				(status.size !== entry.size || status.mtimeNs !== entry.mtimeNs)
-			) {
-				throw new Error(
-					`Source changed after operation planning: ${entry.sourcePath}`,
-				);
-			}
-		},
-		ENTRY_IO_CONCURRENCY,
-	);
+	for (const entry of entries) {
+		const path = entryPath(entry, cacheRoot);
+		const status = await lstat(path, { bigint: true });
+		if (!status.isFile() || status.isSymbolicLink()) {
+			throw new Error(`Publication entry is not a real file: ${path}`);
+		}
+		if (
+			entry.origin === "source" &&
+			(status.size !== entry.size || status.mtimeNs !== entry.mtimeNs)
+		) {
+			throw new Error(
+				`Source changed after operation planning: ${entry.sourcePath}`,
+			);
+		}
+	}
 
 	await mkdir(path, { recursive: true });
-	await mapBounded(
-		entries,
-		(entry) =>
-			symlink(
-				entryPath(entry, cacheRoot),
-				join(path, entry.destinationName),
-			),
-		ENTRY_IO_CONCURRENCY,
-	);
+	for (const entry of entries) {
+		await symlink(
+			entryPath(entry, cacheRoot),
+			join(path, entry.destinationName),
+		);
+	}
 }
 
 function updatePhase(
@@ -141,7 +128,7 @@ function finalizePublication(
 	prior: PriorVersion | null,
 ): void {
 	if (operation.version_id === null) {
-		throw new InvalidOperationState(
+		throw new Error(
 			"Publication operation has no version identity",
 		);
 	}
@@ -153,7 +140,7 @@ function finalizePublication(
 			[operation.import_id, timestamp, operation.version_id],
 		);
 		if (promoted.changes !== 1) {
-			throw new InvalidOperationState(
+			throw new Error(
 				"Pending version cannot be promoted",
 			);
 		}
@@ -244,14 +231,14 @@ async function removeOwnedTemporaryLink(
 	const target = relativeVersionTarget(destination, version);
 	const status = await lstat(temporaryLink);
 	if (!status.isSymbolicLink()) {
-		throw new InvalidOperationState(
+		throw new Error(
 			`Temporary link is unsafe: ${temporaryLink}`,
 		);
 	}
 
 	const { readlink } = await import("node:fs/promises");
 	if ((await readlink(temporaryLink)) !== target) {
-		throw new InvalidOperationState(
+		throw new Error(
 			`Temporary link does not belong to operation: ${temporaryLink}`,
 		);
 	}
@@ -281,7 +268,7 @@ export async function executeOperation(
 	try {
 		if (operation.kind === "delete") {
 			if (prior === null) {
-				throw new InvalidOperationState(
+				throw new Error(
 					"Delete operation has no published version",
 				);
 			}
@@ -298,7 +285,7 @@ export async function executeOperation(
 							versionRoot,
 						))
 					) {
-						throw new InvalidOperationState(
+						throw new Error(
 							`Refusing to delete unowned leaf: ${prior.destination_path}`,
 						);
 					}
@@ -317,7 +304,7 @@ export async function executeOperation(
 		await validateCacheEntries(entries, cacheRoot);
 
 		if (paths.version === null || operation.version_id === null) {
-			throw new InvalidOperationState(
+			throw new Error(
 				"Publication operation has no version identity",
 			);
 		}
@@ -327,7 +314,7 @@ export async function executeOperation(
 			)
 			.get(operation.version_id, operation.id);
 		if (versionRecord?.version_path !== paths.version) {
-			throw new InvalidOperationState(
+			throw new Error(
 				"Operation version record is invalid",
 			);
 		}
@@ -340,12 +327,12 @@ export async function executeOperation(
 			if (await isMissing(paths.version)) {
 				await rename(paths.staging, paths.version);
 			} else if (!(await isMissing(paths.staging))) {
-				throw new InvalidOperationState(
+				throw new Error(
 					`Version and staging both exist: ${paths.version}`,
 				);
 			}
 			if (!(await entriesMatch(paths.version, entries, cacheRoot))) {
-				throw new InvalidOperationState(
+				throw new Error(
 					`Version does not match operation: ${paths.version}`,
 				);
 			}
@@ -362,7 +349,7 @@ export async function executeOperation(
 			) {
 				if (prior === null) {
 					if (!(await isMissing(paths.destination))) {
-						throw new InvalidOperationState(
+						throw new Error(
 							`Destination exists: ${paths.destination}`,
 						);
 					}
@@ -374,7 +361,7 @@ export async function executeOperation(
 							versionRoot,
 						))
 					) {
-						throw new InvalidOperationState(
+						throw new Error(
 							`Refusing to replace unowned leaf: ${prior.destination_path}`,
 						);
 					}
@@ -382,7 +369,7 @@ export async function executeOperation(
 						prior.destination_path !== paths.destination &&
 						!(await isMissing(paths.destination))
 					) {
-						throw new InvalidOperationState(
+						throw new Error(
 							`Destination exists: ${paths.destination}`,
 						);
 					}
@@ -425,7 +412,7 @@ export async function executeOperation(
 						versionRoot,
 					))
 				) {
-					throw new InvalidOperationState(
+					throw new Error(
 						`Refusing to remove unowned prior leaf: ${prior.destination_path}`,
 					);
 				}
@@ -438,7 +425,7 @@ export async function executeOperation(
 					versionRoot,
 				))
 			) {
-				throw new InvalidOperationState(
+				throw new Error(
 					`Published leaf is not owned: ${paths.destination}`,
 				);
 			}
@@ -446,7 +433,7 @@ export async function executeOperation(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (error instanceof InvalidOperationState) {
+		if (error instanceof Error) {
 			updatePhase(state, operation.id, "attention_required", message);
 			state.database.run(
 				"INSERT OR IGNORE INTO reviews (id, import_id, operation_id, kind, details_json, created_at_ns) VALUES (?, NULL, ?, 'attention_required', ?, ?)",

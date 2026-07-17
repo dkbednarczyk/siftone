@@ -19,9 +19,10 @@
 	"dependencies": {
 		"commander": "^15.0.0",
 		"elysia": "^1.4.29",
-		"image-size": "^2.0.2",
 		"music-metadata": "^11.14.0",
 		"musicbrainz-api": "^1.2.1",
+		"p-retry": "^8.0.0",
+		"pretty-ms": "^9.3.0",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {

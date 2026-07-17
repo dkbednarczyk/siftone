@@ -46,13 +46,6 @@ const UPSERT_CONFIRMED_SOURCE_OBSERVATION =
 const UPSERT_PENDING_SOURCE_OBSERVATION =
 	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns, updated_at_ns) VALUES (?, NULL, ?, ?, ?) ON CONFLICT(root_path) DO UPDATE SET pending_manifest_hash = excluded.pending_manifest_hash, pending_since_ns = excluded.pending_since_ns, updated_at_ns = excluded.updated_at_ns";
 
-export class ImportStateError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "ImportStateError";
-	}
-}
-
 function configure(database: Database): void {
 	database.run("PRAGMA foreign_keys = ON");
 	database.run("PRAGMA journal_mode = WAL");
@@ -81,6 +74,7 @@ function schemaObjects(database: Database): unknown[] {
 }
 
 let expectedSchema: unknown[] | undefined;
+
 function expectedSchemaObjects(): unknown[] {
 	if (expectedSchema !== undefined) {
 		return expectedSchema;
@@ -99,16 +93,17 @@ function expectedSchemaObjects(): unknown[] {
 
 export function validateImportStateSchema(database: Database): void {
 	configure(database);
+
 	const appId = database
 		.query<{ application_id: number }, []>("PRAGMA application_id")
 		.get();
 
-	if (
-		appId?.application_id !== APPLICATION_ID ||
-		JSON.stringify(schemaObjects(database)) !==
-			JSON.stringify(expectedSchemaObjects())
-	) {
-		throw new ImportStateError(
+	const schemaMatches =
+		JSON.stringify(schemaObjects(database)) ===
+		JSON.stringify(expectedSchemaObjects());
+
+	if (appId?.application_id !== APPLICATION_ID || !schemaMatches) {
+		throw new Error(
 			"Incompatible SQLite library state; delete and recreate it instead of migrating",
 		);
 	}
@@ -132,7 +127,7 @@ function openAndValidateSchema(path: string): Database {
 			.get();
 
 		if (check?.quick_check !== "ok") {
-			throw new ImportStateError(
+			throw new Error(
 				`SQLite quick_check failed: ${check?.quick_check ?? "no result"}`,
 			);
 		}
@@ -168,17 +163,19 @@ export async function openImportState({
 	versionRoot?: string;
 }>): Promise<ImportState> {
 	const databasePath = join(stateRoot, DATABASE_FILE);
-	if (
-		!existsSync(databasePath) &&
-		(!(await isEmptyDirectory(generatedLibraryRoot)) ||
-			!(await isEmptyDirectory(versionRoot)))
-	) {
-		throw new ImportStateError(
+
+	const rootsAreEmpty =
+		(await isEmptyDirectory(generatedLibraryRoot)) &&
+		(await isEmptyDirectory(versionRoot));
+
+	if (!existsSync(databasePath) && !rootsAreEmpty) {
+		throw new Error(
 			"Generated-library or version root is non-empty but library state is absent; refusing to adopt output",
 		);
 	}
 
 	const database = openAndValidateSchema(databasePath);
+
 	return {
 		databasePath,
 		database,
@@ -241,7 +238,7 @@ export async function openImportState({
 				);
 
 				if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
-					throw new ImportStateError(
+					throw new Error(
 						`Unsafe generated destination: ${destination}`,
 					);
 				}
@@ -253,7 +250,7 @@ export async function openImportState({
 					.get(destination);
 
 				if (known === null && existsSync(destination)) {
-					throw new ImportStateError(
+					throw new Error(
 						`Generated destination exists without SQLite ownership: ${destination}`,
 					);
 				}
