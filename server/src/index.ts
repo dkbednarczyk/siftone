@@ -22,14 +22,9 @@ export type ServerCommandOptions = Readonly<{
 	backup?: string;
 }>;
 
-function pathOption(
-	flags: string,
-	name: "config" | "backup",
-	conflicts: string[] = [],
-): Option {
-	return new Option(flags)
-		.conflicts(conflicts)
-		.argParser((value: string, previous: string | undefined) => {
+function pathOption(flags: string, name: "config" | "backup"): Option {
+	return new Option(flags).argParser(
+		(value: string, previous: string | undefined) => {
 			if (value.startsWith("--") || value.trim().length === 0) {
 				throw new Error(`--${name} requires a file path`);
 			}
@@ -39,7 +34,8 @@ function pathOption(
 			}
 
 			return value;
-		});
+		},
+	);
 }
 
 /** Creates the sole root command for every Siftone server invocation. */
