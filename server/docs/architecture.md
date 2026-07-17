@@ -45,8 +45,8 @@ The server has two halves with a narrow join:
   result with recorded state and makes durable filesystem changes. It owns recovery
   and never treats an existing generated directory as safe merely because it exists.
 
-Keeping planning separate from mutation makes dry runs trustworthy, concentrates
-filesystem safety checks, and allows scheduled snapshots to reuse the same path as startup.
+Keeping preparation separate from mutation concentrates filesystem safety
+checks and allows scheduled snapshots to reuse the same path as startup.
 
 ## Design rules that constrain every change
 
@@ -63,9 +63,8 @@ filesystem safety checks, and allows scheduled snapshots to reuse the same path 
 ## Startup, steady state, and shutdown
 
 `src/index.ts` is the composition root and the only normal process entry point.
-It selects one of three modes:
+It selects one of two modes:
 
-- `--dry-run` calls `runDryRun` and stops before opening state or changing files.
 - `--backup` calls `restoreState` and stops after a validated state restore.
 - Normal mode loads configuration and calls the internal `runServer` lifecycle.
 
@@ -198,7 +197,7 @@ coordination mechanism.
 | `src/index.ts` | CLI modes, process lifecycle, dependency composition | Keeps application wiring out of domain logic. |
 | `src/config.ts` | Strict TOML loading, root creation/canonicalization, non-overlap checks | Validates filesystem safety before the HTTP listener or mutable state opens. |
 | `src/app.ts` | Elysia health and local reconciliation transport | HTTP stays a replaceable edge adapter. |
-| `src/dry-run.ts`, `src/restore.ts` | One-shot operational commands | Reuse normal preparation/state rules without joining the service lifecycle. |
+| `src/restore.ts` | One-shot operational command | Reuses state validation without joining the service lifecycle. |
 | `src/candidates/` | Bounded source discovery and metadata validation | Defines what may enter the pipeline, without publishing it. |
 | `src/metadata/tags.ts` | Read-only adapter around `music-metadata` | Makes embedded tags the single source of metadata and keeps third-party parsing at the edge. |
 | `src/publication/plan.ts` | Deterministic sanitized album/entry layout | Lets destination conflicts be found before filesystem writes. |
@@ -250,7 +249,7 @@ For a typical server change:
 
 Implemented today: configuration validation, periodic complete scans, tag-based
 planning, SQLite ownership/state, crash recovery, daily backups, scheduled
-reconciliation, atomic symlink publication, dry runs, restore, health, and local
+reconciliation, atomic symlink publication, restore, health, and local
 reconciliation-testing routes.
 
 Not yet implemented: the authenticated management REST API, SSE, CLI

@@ -113,6 +113,5 @@ server/scripts/gonic-test.sh verify
   fails, earlier exact albums remain published, staging is cleaned, and a rerun
   resumes the remaining plans once the failure is resolved. A failed commit may
   leave an empty expected artist directory, which is safe for a rerun.
-- If publication preflight fails, inspect the read-only plan with
-  `bun run --cwd server scan:dry-run`. Correct the source tags or review the
+- If publication preflight fails, correct the source tags or review the
   conflicting generated entry; Siftone will not overwrite it.

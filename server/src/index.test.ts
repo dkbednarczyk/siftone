@@ -24,19 +24,15 @@ describe("server command", () => {
 	test("parses the config option in both Commander forms", () => {
 		expect(parseArguments(["--config", "settings/server.toml"])).toEqual({
 			config: "settings/server.toml",
-			dryRun: false,
 		});
 		expect(parseArguments(["--config=settings/server.toml"])).toEqual({
 			config: "settings/server.toml",
-			dryRun: false,
 		});
 	});
 
-	test("selects dry-run and restore modes from root options", () => {
-		expect(parseArguments(["--dry-run"])).toEqual({ dryRun: true });
+	test("selects restore mode from root options", () => {
 		expect(parseArguments(["--backup", "backups/imports.sqlite"])).toEqual({
 			backup: "backups/imports.sqlite",
-			dryRun: false,
 		});
 	});
 
@@ -50,9 +46,6 @@ describe("server command", () => {
 		expect(() =>
 			parseArguments(["--config", "one.toml", "--config", "two.toml"]),
 		).toThrow("--config may only be specified once");
-		expect(() =>
-			parseArguments(["--backup", "snapshot", "--dry-run"]),
-		).toThrow("cannot be used");
 		expect(() => parseArguments(["--verbose"])).toThrow("unknown option");
 	});
 

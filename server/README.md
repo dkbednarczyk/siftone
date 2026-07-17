@@ -11,7 +11,6 @@ bun run --cwd server dev
 bun run --cwd server check
 bun run --cwd server typecheck
 bun run --cwd server test
-bun run --cwd server scan:dry-run
 bun run --cwd server build:linux-x64
 ```
 
@@ -50,9 +49,7 @@ cd server
 bun --watch src/index.ts --config /path/to/config.toml
 ```
 
-Use `--dry-run` to report publication candidates without changing state. To
-restore a verified SQLite snapshot, pass its path with `--backup`; it cannot be
-combined with `--dry-run`:
+To restore a verified SQLite snapshot, pass its path with `--backup`:
 
 ```bash
 bun run --cwd server state:restore /path/to/imports.sqlite
@@ -131,7 +128,7 @@ rejects equal, parent/child, or otherwise overlapping roots.
 ## Current behavior
 
 - Discover each immediate real child of the watch root as a candidate; recurse deterministically within it for FLAC/MP3 and JPEG/PNG sidecars (case-insensitive), with files accepted through eight path components below the candidate root (directories at that boundary are pruned) and a 10,000-entry budget per candidate. Discovery reports a recoverable issue when either limit prunes paths, excludes candidates with no discovered audio, and ignores all source symlinks.
-- Read embedded tags and validate the fields required for publication. `bun run --cwd server scan:dry-run` emits the proposed destination links and validation issues without writing any directories or symlinks.
+- Read embedded tags and validate the fields required for publication.
 - At boot, bind the HTTP listener before opening SQLite or running import work, so
   an unavailable port fails without scanning or changing import state. Health is
   degraded while startup continues with opening the SQLite ownership/state

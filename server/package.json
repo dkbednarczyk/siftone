@@ -6,7 +6,6 @@
 	"scripts": {
 		"dev": "bun --watch src/index.ts --config ./config.toml",
 		"start": "bun run src/index.ts --config ./config.toml",
-		"scan:dry-run": "bun run src/index.ts --config ./config.toml --dry-run",
 		"state:restore": "bun run src/index.ts --config ./config.toml --backup",
 		"musicbrainz:test": "bun run src/musicbrainz-test.ts",
 		"test": "bun test",

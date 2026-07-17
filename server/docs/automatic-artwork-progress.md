@@ -138,7 +138,7 @@ can distinguish completed work from approved but unimplemented scope.
       source-only runtime compatibility, old-schema rejection, constraint/FK/
       integrity coverage, and cache-reference deletion tests. Focused state and
       reconciliation tests, full server tests (126), typecheck, Biome, frozen
-      install, Linux builds, isolated compiled dry-run, and diff check passed.
+      install, Linux builds, isolated compiled-binary execution, and diff check passed.
 - [ ] Phase 4 — Thread `cacheRoot` through reconciliation, operation staging,
       recovery, snapshots, and finalization; ensure cache entries never depend
       on `source_files`.

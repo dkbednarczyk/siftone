@@ -2,7 +2,6 @@ import { resolve } from "node:path";
 import { Command, Option } from "commander";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
-import { runDryRun } from "./dry-run";
 import { preparePublication } from "./publication/prepare";
 import { restoreState } from "./restore";
 import { createDailyBackup } from "./state/backup";
@@ -21,7 +20,6 @@ import { formatDuration } from "./util/duration";
 export type ServerCommandOptions = Readonly<{
 	config?: string;
 	backup?: string;
-	dryRun: boolean;
 }>;
 
 function pathOption(
@@ -50,15 +48,7 @@ export function createServerCommand(): Command {
 		.name("siftone")
 		.description("Manage and serve a Siftone music library")
 		.addOption(pathOption("--config <path>", "config"))
-		.addOption(pathOption("--backup <path>", "backup", ["dryRun"]))
-		.addOption(
-			new Option(
-				"--dry-run",
-				"Report publication candidates without changing state",
-			)
-				.default(false)
-				.conflicts(["backup"]),
-		);
+		.addOption(pathOption("--backup <path>", "backup"));
 }
 
 async function runServer(config: ServerConfig): Promise<void> {
@@ -233,14 +223,6 @@ async function main(): Promise<void> {
 
 	if (options.backup !== undefined) {
 		await restoreState(config, resolve(process.cwd(), options.backup));
-		return;
-	}
-
-	if (options.dryRun) {
-		if (await runDryRun(config)) {
-			process.exitCode = 1;
-		}
-
 		return;
 	}
 
