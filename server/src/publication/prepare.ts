@@ -188,9 +188,7 @@ export function arbitratePublicationContenders(
 ): CollisionArbitration {
 	const byDestination = new Map<string, PublicationContender[]>();
 	for (const contender of contenders) {
-		const destination = dirname(
-			contender.entries[0]?.destinationPath ?? "",
-		);
+		const destination = contenderDestination(contender);
 
 		const group = byDestination.get(destination) ?? [];
 		group.push(contender);
