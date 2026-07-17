@@ -1,15 +1,17 @@
+import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { PublicationInput } from "../../publication/publish";
 import { mapBounded } from "../../util/util";
 import { canonicalAbsolutePath, isPathWithinRoot } from "../canonical-path";
 import type { ImportState } from "../import-state";
-import { ensurePublicationRoots } from "../operation-paths";
+import { ensurePublicationRoots, isOwnedPublicLeaf } from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
 import { executeOperation } from "./execute-operation";
 import { currentImports, destinationEntries } from "./operation-entries";
 import { createOperation, existingFor } from "./operation-store";
 import type { OperationRow } from "./types";
+import { collectRetiredVersions } from "./version-gc";
 
 const OPERATION_CONCURRENCY = 4;
 
@@ -29,16 +31,25 @@ export async function recoverInterruptedOperations({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
+	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRetentionHours = 24,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
+	versionRoot?: string;
+	versionRetentionHours?: number;
 }>): Promise<void> {
-	await ensurePublicationRoots(generatedLibraryRoot, stagingRoot);
+	await mkdir(versionRoot, { recursive: true });
+	await ensurePublicationRoots(
+		generatedLibraryRoot,
+		stagingRoot,
+		versionRoot,
+	);
 
 	const operations = state.database
 		.query<OperationRow, []>(
-			"SELECT id, import_id, source_release_id, kind, phase, target_destination_path, staging_path FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
+			"SELECT id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, version_id, version_path FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
 		)
 		.all();
 
@@ -49,9 +60,16 @@ export async function recoverInterruptedOperations({
 				state,
 				generatedLibraryRoot,
 				stagingRoot,
+				versionRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,
+	);
+	await collectRetiredVersions(
+		state,
+		generatedLibraryRoot,
+		versionRoot,
+		versionRetentionHours,
 	);
 }
 
@@ -59,6 +77,8 @@ export async function reconcileImports({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
+	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRetentionHours = 24,
 	watchRoot,
 	inputs,
 	complete,
@@ -68,13 +88,20 @@ export async function reconcileImports({
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
+	versionRoot?: string;
+	versionRetentionHours?: number;
 	watchRoot: string;
 	inputs: readonly PublicationInput[];
 	complete: boolean;
 	incompleteSourceContainers?: readonly string[];
 	observedSourceContainers?: readonly string[];
 }>): Promise<void> {
-	await ensurePublicationRoots(generatedLibraryRoot, stagingRoot);
+	await mkdir(versionRoot, { recursive: true });
+	await ensurePublicationRoots(
+		generatedLibraryRoot,
+		stagingRoot,
+		versionRoot,
+	);
 
 	const desired = await mapBounded(inputs, (input) =>
 		desiredFor(watchRoot, generatedLibraryRoot, input),
@@ -112,7 +139,15 @@ export async function reconcileImports({
 
 		if (existing === null) {
 			scheduled.push(
-				createOperation(state, null, item, stagingRoot, "add", null),
+				createOperation(
+					state,
+					null,
+					item,
+					stagingRoot,
+					versionRoot,
+					"add",
+					null,
+				),
 			);
 		} else if (
 			existing.destination_path !== item.destinationPath ||
@@ -124,13 +159,20 @@ export async function reconcileImports({
 					existing,
 					item,
 					stagingRoot,
+					versionRoot,
 					"replace",
 					existing.destination_path,
 				),
 			);
 		} else if (
-			!(await entriesMatch(
+			existing.version_path === null ||
+			!(await isOwnedPublicLeaf(
 				item.destination,
+				existing.version_path,
+				versionRoot,
+			)) ||
+			!(await entriesMatch(
+				existing.version_path,
 				destinationEntries(state, existing.import_id),
 			))
 		) {
@@ -140,6 +182,7 @@ export async function reconcileImports({
 					existing,
 					item,
 					stagingRoot,
+					versionRoot,
 					"repair",
 					existing.destination_path,
 				),
@@ -194,12 +237,17 @@ export async function reconcileImports({
 				continue;
 			}
 
-			immediate(state, () =>
-				state.database.run(
-					"UPDATE source_releases SET availability = 'missing', missing_since_ns = COALESCE(missing_since_ns, ?), updated_at_ns = ? WHERE id = ?",
-					[nowNs(), nowNs(), row.release_id],
-				),
-			);
+			if (row.release_availability === "present") {
+				immediate(state, () =>
+					state.database.run(
+						"UPDATE source_releases SET availability = 'missing', missing_since_ns = COALESCE(missing_since_ns, ?), updated_at_ns = ? WHERE id = ?",
+						[nowNs(), nowNs(), row.release_id],
+					),
+				);
+
+				continue;
+			}
+
 			scheduled.push(
 				createOperation(
 					state,
@@ -207,19 +255,22 @@ export async function reconcileImports({
 						import_id: row.import_id,
 						release_id: row.release_id,
 						destination_path: row.destination_path,
+						version_id: null,
+						version_path: null,
 						manifest_hash: "",
 						container_availability: "missing",
 						release_availability: "missing",
 					},
 					undefined,
 					stagingRoot,
+					versionRoot,
 					"delete",
 					row.destination_path,
 				),
 			);
 		}
 
-		if (complete) {
+		if (complete && incompleteSourceContainers.length === 0) {
 			state.database.run(
 				"UPDATE reconciliation_state SET required = 0, last_full_scan_at_ns = ?, last_error = NULL, updated_at_ns = ? WHERE id = 1",
 				[nowNs(), nowNs()],
@@ -233,21 +284,15 @@ export async function reconcileImports({
 				state,
 				generatedLibraryRoot,
 				stagingRoot,
+				versionRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,
 	);
-}
-
-export async function reconcileSourceContainer(
-	options: Omit<
-		Parameters<typeof reconcileImports>[0],
-		"complete" | "observedSourceContainers"
-	> & { containerPath: string },
-): Promise<void> {
-	await reconcileImports({
-		...options,
-		complete: false,
-		observedSourceContainers: [options.containerPath],
-	});
+	await collectRetiredVersions(
+		state,
+		generatedLibraryRoot,
+		versionRoot,
+		versionRetentionHours,
+	);
 }

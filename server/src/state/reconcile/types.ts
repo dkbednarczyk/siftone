@@ -38,4 +38,6 @@ export type OperationRow = {
 	phase: ImportOperationPhase;
 	target_destination_path: string;
 	staging_path: string;
+	version_id: string | null;
+	version_path: string | null;
 };

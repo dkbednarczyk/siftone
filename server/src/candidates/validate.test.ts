@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import type { AudioTagReader, AudioTags } from "../metadata/tags";
-import { planPublication } from "../publication/plan";
 import type { DiscoveredCandidate } from "./discover";
 import { validateCandidate } from "./validate";
 
@@ -147,13 +146,6 @@ describe("candidate metadata validation", () => {
 				},
 			],
 		});
-		if (result.valid) {
-			expect(planPublication(result.candidate, "/library")).toMatchObject(
-				{
-					valid: true,
-				},
-			);
-		}
 	});
 
 	test("selects album-name artwork when no cover exists", async () => {

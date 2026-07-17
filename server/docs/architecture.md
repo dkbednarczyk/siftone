@@ -33,7 +33,7 @@ map. AI-assisted readers should use the stable paths and exported entry points i
                          v
        generated symlink library (generated_library_root)
 
-HTTP health endpoint <----- application lifecycle -----> chokidar watcher
+HTTP/API endpoints <----- application lifecycle -----> reconciliation scheduler
 ```
 
 The server has two halves with a narrow join:
@@ -46,7 +46,7 @@ The server has two halves with a narrow join:
   and never treats an existing generated directory as safe merely because it exists.
 
 Keeping planning separate from mutation makes dry runs trustworthy, concentrates
-filesystem safety checks, and allows the watcher to reuse the same path as startup.
+filesystem safety checks, and allows scheduled snapshots to reuse the same path as startup.
 
 ## Design rules that constrain every change
 
@@ -56,9 +56,9 @@ filesystem safety checks, and allows the watcher to reuse the same path as start
 | Embedded audio tags are the metadata authority. | Folder names and sidecar text files are inconsistent and must not silently redefine a release. |
 | The generated library is owned, not discovered. | The server must not adopt, overwrite, or delete an unmanaged destination. This protects users' existing music trees. |
 | A generated album is complete or absent. | Albums are staged on the generated library filesystem and published by rename, avoiding visible partial output. |
-| Uncertain input suppresses destructive work. | Invalid, incomplete, conflicting, or watcher-lost input must not cause removal of prior output. |
+| Uncertain input suppresses destructive work. | Invalid, incomplete, or conflicting input must not cause removal of prior output. |
 | State records intent as well as results. | A crash can occur between filesystem steps; operations make restart recovery deterministic. |
-| Boundaries stay framework-independent. | Elysia, Commander, chokidar, and `music-metadata` are adapters. Import, publication, and state decisions should remain usable without a transport. |
+| Boundaries stay framework-independent. | Elysia, Commander, and `music-metadata` are adapters. Import, publication, and state decisions should remain usable without a transport. |
 
 ## Startup, steady state, and shutdown
 
@@ -79,7 +79,7 @@ load and validate TOML
   -> resume interrupted operations
   -> prepare a complete source snapshot
   -> reconcile snapshot with recorded output
-  -> start the source watcher
+  -> start the reconciliation scheduler
   -> report healthy /api/v1/health
 ```
 
@@ -88,9 +88,9 @@ without opening SQLite, writing a backup, or scanning and reconciling imports.
 
 Recovery happens before a fresh scan so an interrupted operation can be resolved
 from its durable record rather than guessed from whatever happens to be on disk.
-A full snapshot is reconciled before watching to cover changes made while Siftone
-was stopped. On `SIGINT` or `SIGTERM`, the server closes the watcher and HTTP
-listener before closing SQLite.
+A full snapshot is reconciled before scheduled scans begin to cover changes made
+while Siftone was stopped. On `SIGINT` or `SIGTERM`, the server closes the
+scheduler and HTTP listener before closing SQLite.
 
 The health handler in `src/app.ts` is intentionally thin. It asks state whether
 Siftone is degraded and exposes `ok` or `degraded`; business logic does not live
@@ -113,7 +113,7 @@ immediate child of watch root
 A source directory is a **container**, while exact embedded `ALBUM` tags may
 divide its audio into one or more **logical releases**. Validation then resolves
 the album artist from `ALBUMARTIST` or the track artists; source folder names
-never define a release. This preserves directory-level watching while allowing
+never define a release. This preserves directory-level containment while allowing
 tags to define publishable albums. Discovery is bounded by depth and entry
 budgets so a pathological tree cannot make a scan unbounded.
 
@@ -123,20 +123,23 @@ excludes those containers from removal decisions. Equivalent FLAC and MP3 plans
 can be deterministically reduced; competing non-equivalent output requires review
 rather than a winner chosen by accident.
 
-### Watcher-triggered scan
+### Scheduled reconciliation
 
-`state/watcher.ts` uses chokidar because it provides the recursive watch behavior
-and error surface the server needs. Filesystem events are signals, not facts:
+`state/watcher.ts` deliberately does not recursively watch the source tree. Linux
+inotify consumes one watch per directory, so large trees can exhaust
+`fs.inotify.max_user_watches`. Instead it serializes full, bounded snapshots:
 
 ```text
-source event -> identify immediate container -> wait for quiet period
-  -> serialize work for that container -> prepare that container -> reconcile it
+timer or POST rescan -> complete discovery -> prepare all candidates
+  -> global arbitration -> reconcile desired state
 ```
 
-Coalescing avoids importing a release while a downloader is still writing it, and
-per-container serialization avoids overlapping changes to the same logical unit.
-A watcher error or targeted scan failure marks full reconciliation required and
-makes health degraded; it never authorizes cleanup based on uncertain observation.
+Timer ticks and manual requests coalesce, avoiding overlapping scans. A new or
+changed snapshot must match a later observation at least one configured interval
+away before it is reconciled; an early manual request cannot accelerate that
+confirmation. A failed or incomplete snapshot marks health degraded and never
+authorizes cleanup from an uncertain observation. Global scan failures back off
+up to one hour; a manual request bypasses that delay.
 
 ### Reconciliation and atomic publish
 
@@ -147,12 +150,15 @@ Reconciliation classifies each desired release against state and disk as one of:
 - **repair**: tracked output drifted from its recorded entries;
 - **delete**: a previously present source is absent from a complete scan.
 
-For each change, state first persists an operation with its destination claims and
-entries. The operation then stages an album, moves any prior owned output aside
-when appropriate, atomically publishes the staged directory, and finalizes the
-SQLite records. Staging shares the generated-library filesystem so rename is
-atomic. A later failure does not roll back already successful independent albums;
-a restart resumes the unfinished operation or records that it needs attention.
+For each change, state first persists an operation with destination claims,
+entries, and an immutable version path. It stages an album into that version,
+then atomically renames an adjacent temporary `Artist/Album` symlink over the
+existing owned album symlink. The public leaf therefore never disappears during
+a same-path replacement. Old versions are retained for the configured grace
+period and collected only after they are unreferenced. Staging, versions, and
+the generated library share a filesystem. A restart resumes an unfinished
+operation or records that it needs attention; this recovery guarantee excludes
+power loss because directory fsync is deliberately not required.
 
 `publication/publish.ts` is also a small standalone publisher used by focused
 tests. The normal runtime uses the richer operation journal in `state/reconcile/`.
@@ -191,7 +197,7 @@ coordination mechanism.
 | --- | --- | --- |
 | `src/index.ts` | CLI modes, process lifecycle, dependency composition | Keeps application wiring out of domain logic. |
 | `src/config.ts` | Strict TOML loading, root creation/canonicalization, non-overlap checks | Validates filesystem safety before the HTTP listener or mutable state opens. |
-| `src/app.ts` | Elysia transport and health response | HTTP stays a replaceable edge adapter. |
+| `src/app.ts` | Elysia health and local reconciliation transport | HTTP stays a replaceable edge adapter. |
 | `src/dry-run.ts`, `src/restore.ts` | One-shot operational commands | Reuse normal preparation/state rules without joining the service lifecycle. |
 | `src/candidates/` | Bounded source discovery and metadata validation | Defines what may enter the pipeline, without publishing it. |
 | `src/metadata/tags.ts` | Read-only adapter around `music-metadata` | Makes embedded tags the single source of metadata and keeps third-party parsing at the edge. |
@@ -200,7 +206,7 @@ coordination mechanism.
 | `src/publication/publish.ts` | Standalone preflight/stage/publish primitive | Provides a narrow atomic publisher for direct use and tests. |
 | `src/state/import-state.ts`, `schema.ts` | SQLite lifecycle, ownership guard, database format | Contains the durable source of truth for managed output. |
 | `src/state/reconcile/` | Desired-vs-recorded comparison, operation journal, resume logic | Coordinates filesystem and database transitions at one safety boundary. |
-| `src/state/watcher.ts` | Event coalescing and per-container work serialization | Treats noisy filesystem events as a trigger for re-observation. |
+| `src/state/watcher.ts` | Single-flight timer scheduling and retry backoff | Triggers complete bounded re-observation without recursive filesystem watches. |
 | `src/state/*-paths.ts`, `publication-snapshot.ts`, `reconcile/types.ts` | Path safety, manifests, and reconciliation vocabulary | Keeps the critical reconciler readable and its invariants reusable. |
 | `src/state/backup.ts` | Verified daily snapshot and restore primitive | Keeps backup validity independent of CLI presentation. |
 | `src/**/*.test.ts` | Boundary tests | Keep expected behavior near the owning code. |
@@ -217,7 +223,7 @@ coordination mechanism.
 | Change duplicate/collision policy | `src/publication/prepare.ts` | `prepare.test.ts`, incomplete-input safeguards |
 | Change publication filesystem behavior | `src/state/reconcile/` and `src/publication/publish.ts` | `publish.test.ts`, `reconcile/reconcile.test.ts`, recovery cases |
 | Change database data or recovery phases | `src/state/schema.ts`, `import-state.ts`, `reconcile/types.ts` | `reconcile/reconcile.test.ts`, `import-state.test.ts`, backup compatibility |
-| Change watch behavior | `src/state/watcher.ts` | `watcher.test.ts`, degraded-state behavior in `index.ts` |
+| Change reconciliation cadence | `src/state/watcher.ts` | `watcher.test.ts`, degraded-state behavior in `index.ts` |
 | Add an HTTP endpoint | `src/app.ts` | Keep transport thin; use a framework-independent module. |
 
 ## Testing and safe change workflow
@@ -242,11 +248,12 @@ For a typical server change:
 
 ## Current scope and intentionally open boundaries
 
-Implemented today: configuration validation, full and targeted scans, tag-based
-planning, SQLite ownership/state, crash recovery, daily backups, watcher-triggered
-reconciliation, atomic symlink publication, dry runs, restore, and a health route.
+Implemented today: configuration validation, periodic complete scans, tag-based
+planning, SQLite ownership/state, crash recovery, daily backups, scheduled
+reconciliation, atomic symlink publication, dry runs, restore, health, and local
+reconciliation-testing routes.
 
-Not yet implemented: the management REST API, authenticated SSE, CLI
+Not yet implemented: the authenticated management REST API, SSE, CLI
 management flows, review resolution UI/API, most artwork cache/remote-artwork
 work, and the broader policy described as planned in `server/README.md`.
 

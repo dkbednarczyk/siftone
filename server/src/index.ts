@@ -3,19 +3,19 @@ import { Command, Option } from "commander";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
 import { runDryRun } from "./dry-run";
-import {
-	preparePublication,
-	prepareSourceContainer,
-} from "./publication/prepare";
+import { preparePublication } from "./publication/prepare";
 import { restoreState } from "./restore";
 import { createDailyBackup } from "./state/backup";
 import { openImportState } from "./state/import-state";
 import {
 	reconcileImports,
-	reconcileSourceContainer,
 	recoverInterruptedOperations,
 } from "./state/reconcile";
-import { startSourceWatcher } from "./state/watcher";
+import { observeSource } from "./state/source-observer";
+import {
+	type ReconciliationScheduler,
+	startSourceWatcher,
+} from "./state/watcher";
 import { formatDuration } from "./util/duration";
 
 export type ServerCommandOptions = Readonly<{
@@ -63,10 +63,11 @@ export function createServerCommand(): Command {
 
 async function runServer(config: ServerConfig): Promise<void> {
 	let state: Awaited<ReturnType<typeof openImportState>> | undefined;
-	let watcher: ReturnType<typeof startSourceWatcher> | undefined;
+	let watcher: ReconciliationScheduler | undefined;
 	let ready = false;
-	const server = createApp(() =>
-		ready && state?.isDegraded() === false ? "ok" : "degraded",
+	const server = createApp(
+		() => (ready && state?.isDegraded() === false ? "ok" : "degraded"),
+		() => watcher,
 	).listen({ hostname: "127.0.0.1", port: config.port });
 
 	console.info(
@@ -77,8 +78,10 @@ async function runServer(config: ServerConfig): Promise<void> {
 		const importState = await openImportState({
 			stateRoot: config.paths.stateRoot,
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			versionRoot: config.paths.versionRoot,
 		});
 		state = importState;
+		importState.resetSourceObservationWindow();
 		await createDailyBackup(importState, config.paths.backupRoot);
 
 		// Recovery is intentionally separate from normal reconciliation: it must not
@@ -87,69 +90,96 @@ async function runServer(config: ServerConfig): Promise<void> {
 			state: importState,
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
 			stagingRoot: config.paths.stagingRoot,
+			versionRoot: config.paths.versionRoot,
+			versionRetentionHours: config.versionRetentionHours,
 		});
 
-		const startupReconciliationStartedAt = performance.now();
-		const prepared = await preparePublication(
-			config.paths.watchRoot,
-			config.paths.generatedLibraryRoot,
-		);
-
-		if (prepared.hasIssues) {
-			console.warn(
-				"Import preflight found invalid or partial candidates; affected removals are suppressed.",
+		const startupObservation = await observeSource(config.paths.watchRoot);
+		if (!startupObservation.complete) {
+			importState.markReconciliationRequired(
+				`Incomplete startup source observation: ${startupObservation.issues[0] ?? "unknown issue"}`,
+			);
+		} else {
+			for (const container of startupObservation.containers) {
+				if (
+					container.manifestHash !== undefined &&
+					container.outcome === "present"
+				) {
+					importState.observeSourceManifest({
+						watchRoot: container.containerPath,
+						manifestHash: container.manifestHash,
+						minimumAgeMs:
+							config.reconciliationIntervalSeconds * 1_000,
+					});
+				}
+			}
+			importState.markReconciliationRequired(
+				"Source snapshot awaits interval-separated confirmation",
 			);
 		}
 
-		await reconcileImports({
-			state: importState,
-			generatedLibraryRoot: config.paths.generatedLibraryRoot,
-			stagingRoot: config.paths.stagingRoot,
-			watchRoot: config.paths.watchRoot,
-			inputs: prepared.plans,
-			complete: true,
-			incompleteSourceContainers: prepared.incompleteSourceContainers,
-		});
-
-		console.info(
-			`Took ${formatDuration(performance.now() - startupReconciliationStartedAt)} to reconcile ${prepared.plans.length} desired import(s) on startup.`,
-		);
-
 		const sourceWatcher = startSourceWatcher({
-			watchRoot: config.paths.watchRoot,
-			onContainer: async (container) => {
-				const incrementalReconciliationStartedAt = performance.now();
-				const targeted = await prepareSourceContainer(
+			intervalMs: config.reconciliationIntervalSeconds * 1_000,
+			onReconcile: async () => {
+				const observation = await observeSource(config.paths.watchRoot);
+				if (!observation.complete) {
+					importState.markReconciliationRequired(
+						`Incomplete periodic source observation: ${observation.issues[0] ?? "unknown issue"}`,
+					);
+					return;
+				}
+
+				const confirmations = observation.containers.map((container) =>
+					container.outcome === "present" &&
+					container.manifestHash !== undefined
+						? importState.observeSourceManifest({
+								watchRoot: container.containerPath,
+								manifestHash: container.manifestHash,
+								minimumAgeMs:
+									config.reconciliationIntervalSeconds *
+									1_000,
+							})
+						: false,
+				);
+				const confirmed = confirmations.every(Boolean);
+				if (!confirmed) {
+					importState.markReconciliationRequired(
+						"Source snapshot awaits interval-separated confirmation",
+					);
+					return;
+				}
+
+				const reconciliationStartedAt = performance.now();
+				const next = await preparePublication(
 					config.paths.watchRoot,
 					config.paths.generatedLibraryRoot,
-					container,
 				);
 
-				if (targeted.incomplete) {
+				if (next.hasIssues) {
 					importState.markReconciliationRequired(
-						`Incomplete watcher scan for ${container}`,
+						"Periodic source scan found invalid or incomplete candidates",
 					);
 				}
 
-				await reconcileSourceContainer({
+				await reconcileImports({
 					state: importState,
 					generatedLibraryRoot: config.paths.generatedLibraryRoot,
 					stagingRoot: config.paths.stagingRoot,
+					versionRoot: config.paths.versionRoot,
+					versionRetentionHours: config.versionRetentionHours,
 					watchRoot: config.paths.watchRoot,
-					containerPath: container,
-					inputs: targeted.plans,
-					incompleteSourceContainers: targeted.incomplete
-						? [container]
-						: [],
+					inputs: next.plans,
+					complete: true,
+					incompleteSourceContainers: next.incompleteSourceContainers,
 				});
 
 				console.info(
-					`Took ${formatDuration(performance.now() - incrementalReconciliationStartedAt)} to reconcile ${targeted.plans.length} desired import(s) for incremental update ${container}.`,
+					`Took ${formatDuration(performance.now() - reconciliationStartedAt)} to reconcile ${next.plans.length} desired import(s) from periodic source scan.`,
 				);
 			},
-			onLoss: (error) =>
+			onFailure: (error) =>
 				importState.markReconciliationRequired(
-					`Watcher lost events: ${error.message}`,
+					`Periodic source scan failed: ${error.message}`,
 				),
 		});
 		watcher = sourceWatcher;

@@ -24,24 +24,12 @@ is_running() {
 }
 
 port_in_use() {
-	if command -v ss >/dev/null 2>&1; then
-		ss -ltn "sport = :$listen_port" | grep -q LISTEN
-		return
-	fi
-
-	if command -v lsof >/dev/null 2>&1; then
-		lsof -nP -iTCP:"$listen_port" -sTCP:LISTEN >/dev/null 2>&1
-		return
-	fi
-
-	if (: >"/dev/tcp/$listen_host/$listen_port") >/dev/null 2>&1; then
-		return 0
-	fi
-
-	return 1
+	ss -H -ltn "sport = :$listen_port" | grep -q .
 }
 
 subsonic_request() {
+	local endpoint="$1"
+	shift
 	curl --silent --show-error --fail --get \
 		--user "$gonic_user:$gonic_password" \
 		--data-urlencode "u=$gonic_user" \
@@ -49,18 +37,20 @@ subsonic_request() {
 		--data-urlencode "v=1.16.1" \
 		--data-urlencode "c=siftone" \
 		--data-urlencode "f=json" \
-		"$base_url/rest/$1.view"
+		"$@" \
+		"$base_url/rest/$endpoint.view"
 }
 
 verify() {
 	subsonic_request ping >/dev/null
-	local tracks track_id
-	tracks="$(sqlite3 "$db_path" "select count(*) from tracks;")"
-	if [[ ! "$tracks" =~ ^[1-9][0-9]*$ ]]; then
+	local track_id
+	if ! track_id="$(
+		subsonic_request getRandomSongs --data-urlencode "size=1" |
+			jq -er '."subsonic-response".randomSongs.song[0].id // empty'
+	)"; then
 		echo "Gonic has no indexed tracks." >&2
 		exit 1
 	fi
-	track_id="$(sqlite3 "$db_path" "select id from tracks order by id limit 1;")"
 	curl --silent --show-error --fail --get --range 0-4095 \
 		--user "$gonic_user:$gonic_password" \
 		--data-urlencode "id=$track_id" \
@@ -70,7 +60,7 @@ verify() {
 		--data-urlencode "c=siftone-verify" \
 		-o /dev/null \
 		"$base_url/rest/stream.view"
-	echo "Verified ping, $tracks indexed track(s), and a ranged stream."
+	echo "Verified ping, one indexed track, and a ranged stream."
 }
 
 start() {

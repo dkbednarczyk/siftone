@@ -4,15 +4,19 @@ import {
 	mkdir,
 	mkdtemp,
 	readlink,
+	rename,
 	rm,
+	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import type { PublicationInput } from "../../publication/publish";
 import { openImportState } from "../import-state";
 import { desiredFor } from "../publication-snapshot";
 import { reconcileImports, recoverInterruptedOperations } from "./index";
+import { createOperation } from "./operation-store";
+import { collectRetiredVersions } from "./version-gc";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -166,7 +170,41 @@ describe("reconciliation", () => {
 		).toBe("present");
 		state.close();
 	});
-	test("deletes a missing source release after a complete scan", async () => {
+	test("replaces an album by atomically switching its public leaf to a retained version", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: true,
+		});
+		const leaf = join(paths.generated, "Artist", "Album");
+		const firstTarget = await readlink(leaf);
+		await writeFile(paths.source, "replacement audio");
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: true,
+		});
+		const secondTarget = await readlink(leaf);
+		expect(secondTarget).not.toBe(firstTarget);
+		expect((await lstat(leaf)).isSymbolicLink()).toBe(true);
+		expect((await lstat(join(leaf, "01.flac"))).isSymbolicLink()).toBe(
+			true,
+		);
+		state.close();
+	});
+
+	test("deletes a missing source release after two complete scans", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
 			stateRoot: paths.stateRoot,
@@ -189,6 +227,15 @@ describe("reconciliation", () => {
 			complete: true,
 		});
 
+		await expect(lstat(paths.destination)).resolves.toBeDefined();
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			watchRoot: paths.watchRoot,
+			inputs: [],
+			complete: true,
+		});
 		await expect(lstat(paths.destination)).rejects.toThrow();
 		expect(
 			state.database
@@ -255,27 +302,149 @@ describe("reconciliation", () => {
 		state.close();
 	});
 
-	test("recovery resumes a planned operation after a simulated crash", async () => {
-		const paths = await fixture();
-		const state = await openImportState({
-			stateRoot: paths.stateRoot,
-			generatedLibraryRoot: paths.generated,
-		});
-		// A normal call creates and completes the operation; recovery is idempotent afterwards.
-		await reconcileImports({
-			state,
-			generatedLibraryRoot: paths.generated,
-			stagingRoot: paths.staging,
-			watchRoot: paths.watchRoot,
-			inputs: [paths.input],
-			complete: true,
-		});
-		await recoverInterruptedOperations({
-			state,
-			generatedLibraryRoot: paths.generated,
-			stagingRoot: paths.staging,
-		});
-		expect((await lstat(paths.destination)).isSymbolicLink()).toBe(true);
-		state.close();
+	test("collects only expired unreferenced retired versions", async () => {
+		for (const keepPublicReference of [false, true]) {
+			const paths = await fixture();
+			const state = await openImportState({
+				stateRoot: paths.stateRoot,
+				generatedLibraryRoot: paths.generated,
+			});
+			const versionRoot = join(paths.generated, ".siftone", "versions");
+			await reconcileImports({
+				state,
+				generatedLibraryRoot: paths.generated,
+				stagingRoot: paths.staging,
+				watchRoot: paths.watchRoot,
+				inputs: [paths.input],
+				complete: true,
+			});
+			const leaf = join(paths.generated, "Artist", "Album");
+			const retiredVersion = resolve(dirname(leaf), await readlink(leaf));
+			await writeFile(paths.source, "replacement audio");
+			await reconcileImports({
+				state,
+				generatedLibraryRoot: paths.generated,
+				stagingRoot: paths.staging,
+				watchRoot: paths.watchRoot,
+				inputs: [paths.input],
+				complete: true,
+			});
+			if (keepPublicReference) {
+				await rm(leaf);
+				await symlink(relative(dirname(leaf), retiredVersion), leaf);
+			}
+
+			await collectRetiredVersions(
+				state,
+				paths.generated,
+				versionRoot,
+				0,
+			);
+			if (keepPublicReference) {
+				expect((await lstat(retiredVersion)).isDirectory()).toBe(true);
+			} else {
+				await expect(lstat(retiredVersion)).rejects.toThrow();
+			}
+			expect(
+				state.database
+					.query<{ n: number }, []>(
+						"SELECT count(*) AS n FROM album_versions WHERE state = 'retired'",
+					)
+					.get()?.n,
+			).toBe(keepPublicReference ? 1 : 0);
+			state.close();
+		}
+	});
+
+	test("recovers publication operations from every durable checkpoint", async () => {
+		for (const phase of [
+			"planned",
+			"staged",
+			"versioned",
+			"swapped",
+		] as const) {
+			const paths = await fixture();
+			const state = await openImportState({
+				stateRoot: paths.stateRoot,
+				generatedLibraryRoot: paths.generated,
+			});
+			const desired = await desiredFor(
+				paths.watchRoot,
+				paths.generated,
+				paths.input,
+			);
+			const operation = createOperation(
+				state,
+				null,
+				desired,
+				paths.staging,
+				join(paths.generated, ".siftone", "versions"),
+				"add",
+				null,
+			);
+			const version = operation.version_path;
+			if (version === null) {
+				throw new Error("Publication operation needs a version path");
+			}
+			if (phase !== "planned") {
+				await mkdir(operation.staging_path, { recursive: true });
+				await symlink(
+					paths.source,
+					join(operation.staging_path, "01.flac"),
+				);
+				state.database.run(
+					"UPDATE operations SET phase = 'staged' WHERE id = ?",
+					[operation.id],
+				);
+			}
+			if (phase === "versioned" || phase === "swapped") {
+				await mkdir(dirname(version), { recursive: true });
+				await rename(operation.staging_path, version);
+				state.database.run(
+					"UPDATE operations SET phase = 'versioned' WHERE id = ?",
+					[operation.id],
+				);
+			}
+			if (phase === "swapped") {
+				await mkdir(dirname(operation.target_destination_path), {
+					recursive: true,
+				});
+				await symlink(
+					relative(
+						dirname(operation.target_destination_path),
+						version,
+					),
+					operation.target_destination_path,
+				);
+				state.database.run(
+					"UPDATE operations SET phase = 'swapped' WHERE id = ?",
+					[operation.id],
+				);
+			}
+
+			await recoverInterruptedOperations({
+				state,
+				generatedLibraryRoot: paths.generated,
+				stagingRoot: paths.staging,
+			});
+			expect((await lstat(paths.destination)).isSymbolicLink()).toBe(
+				true,
+			);
+			expect(
+				state.database
+					.query<{ n: number }, []>(
+						"SELECT count(*) AS n FROM operations",
+					)
+					.get()?.n,
+			).toBe(0);
+			expect(
+				state.database
+					.query<{ phase: string }, []>(
+						"SELECT state AS phase FROM album_versions",
+					)
+					.get()?.phase,
+			).toBe("current");
+			state.close();
+		}
 	});
 });

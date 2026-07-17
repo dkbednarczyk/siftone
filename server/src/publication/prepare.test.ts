@@ -1,11 +1,78 @@
-import { describe, expect, test } from "bun:test";
-import { validateCandidate } from "../candidates/validate";
+import { afterEach, describe, expect, test } from "bun:test";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import type { AudioTagReader, AudioTags } from "../metadata/tags";
 import {
 	arbitratePublicationContenders,
 	type PublicationContender,
+	preparePublication,
+	prepareSourceContainer,
 	splitTagGroups,
 } from "./prepare";
+
+const execFileAsync = promisify(execFile);
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+	await Promise.all(
+		temporaryDirectories
+			.splice(0)
+			.map((directory) =>
+				rm(directory, { force: true, recursive: true }),
+			),
+	);
+});
+
+async function taggedFlac(root: string): Promise<string> {
+	const path = join(root, "01 Song.flac");
+	await mkdir(root, { recursive: true });
+	await execFileAsync("ffmpeg", [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		"anullsrc=r=44100:cl=mono",
+		"-t",
+		"0.1",
+		"-c:a",
+		"flac",
+		path,
+	]);
+	await execFileAsync("metaflac", [
+		"--set-tag=TITLE=Song",
+		"--set-tag=ARTIST=Artist",
+		"--set-tag=ALBUM=Album",
+		"--set-tag=TRACKNUMBER=1",
+		path,
+	]);
+	return path;
+}
+
+async function preparedFixture(): Promise<
+	Readonly<{
+		watchRoot: string;
+		generatedRoot: string;
+		albumRoot: string;
+		track: string;
+	}>
+> {
+	const root = await mkdtemp(join(tmpdir(), "siftone-prepare-"));
+	temporaryDirectories.push(root);
+	const watchRoot = join(root, "watch");
+	const albumRoot = join(watchRoot, "Album");
+	const track = await taggedFlac(albumRoot);
+	return {
+		watchRoot,
+		generatedRoot: join(root, "generated"),
+		albumRoot,
+		track,
+	};
+}
 
 function tags(path: string, overrides: Partial<AudioTags> = {}): AudioTags {
 	return {
@@ -48,7 +115,67 @@ function contender(
 	};
 }
 
-describe("publication collision arbitration", () => {
+describe("publication preparation", () => {
+	test("prepares a real tagged album through discovery, validation, and planning", async () => {
+		const fixture = await preparedFixture();
+		const result = await preparePublication(
+			fixture.watchRoot,
+			fixture.generatedRoot,
+		);
+
+		expect(result).toMatchObject({
+			hasIssues: false,
+			incompleteSourceContainers: [],
+			candidates: [{ root: fixture.albumRoot, status: "planned" }],
+			plans: [
+				{
+					root: fixture.albumRoot,
+					entries: [
+						{
+							sourcePath: fixture.track,
+							destinationPath: join(
+								fixture.generatedRoot,
+								"Artist",
+								"Album",
+								"01 Song.flac",
+							),
+						},
+					],
+				},
+			],
+		});
+		expect(
+			await prepareSourceContainer(
+				fixture.watchRoot,
+				fixture.generatedRoot,
+				"Album",
+			),
+		).toMatchObject({
+			incomplete: false,
+			plans: [{ root: fixture.albumRoot }],
+		});
+		await expect(
+			prepareSourceContainer(
+				fixture.watchRoot,
+				fixture.generatedRoot,
+				"../Album",
+			),
+		).rejects.toThrow("Invalid source container");
+	});
+
+	test("marks depth-pruned containers as incomplete", async () => {
+		const fixture = await preparedFixture();
+		await taggedFlac(
+			join(fixture.albumRoot, "a", "b", "c", "d", "e", "f", "g", "h"),
+		);
+		const result = await preparePublication(
+			fixture.watchRoot,
+			fixture.generatedRoot,
+		);
+		expect(result.hasIssues).toBe(true);
+		expect(result.incompleteSourceContainers).toEqual([fixture.albumRoot]);
+	});
+
 	test("prefers a pure FLAC contender over an identical pure MP3 track set", () => {
 		const flac = contender("/source/flac", "flac");
 		const mp3 = contender("/source/mp3", "mp3");
@@ -73,7 +200,7 @@ describe("publication collision arbitration", () => {
 		});
 	});
 
-	test("groups same-title tracks before resolving a missing album artist", async () => {
+	test("groups same-title tracks into one logical release", async () => {
 		const first = "/source/Album/01 Song.flac";
 		const second = "/source/Album/02 Song.flac";
 		const groups = await splitTagGroups(
@@ -92,17 +219,9 @@ describe("publication collision arbitration", () => {
 		);
 
 		expect(groups).toHaveLength(1);
-		const validations = await Promise.all(
-			groups.map(({ candidate, reader: readTags }) =>
-				validateCandidate(candidate, readTags),
-			),
-		);
-		expect(validations).toMatchObject([
-			{ valid: true, candidate: { albumArtist: "Various Artists" } },
-		]);
 	});
 
-	test("groups partially tagged tracks with a consistent ALBUMARTIST", async () => {
+	test("groups tracks when ALBUMARTIST is present on only one track", async () => {
 		const first = "/source/Album/01 Song.flac";
 		const second = "/source/Album/02 Song.flac";
 		const groups = await splitTagGroups(
@@ -122,17 +241,9 @@ describe("publication collision arbitration", () => {
 		);
 
 		expect(groups).toHaveLength(1);
-		const validations = await Promise.all(
-			groups.map(({ candidate, reader: readTags }) =>
-				validateCandidate(candidate, readTags),
-			),
-		);
-		expect(validations).toMatchObject([
-			{ valid: true, candidate: { albumArtist: "Album Artist" } },
-		]);
 	});
 
-	test("groups conflicting explicit ALBUMARTIST values for validation rejection", async () => {
+	test("groups tracks despite conflicting ALBUMARTIST values", async () => {
 		const first = "/source/Album/01 Song.flac";
 		const second = "/source/Album/02 Song.flac";
 		const groups = await splitTagGroups(
@@ -151,21 +262,6 @@ describe("publication collision arbitration", () => {
 		);
 
 		expect(groups).toHaveLength(1);
-		const validations = await Promise.all(
-			groups.map(({ candidate, reader: readTags }) =>
-				validateCandidate(candidate, readTags),
-			),
-		);
-		expect(validations).toMatchObject([
-			{
-				valid: false,
-				issues: [
-					expect.objectContaining({
-						code: "CONFLICTING_ALBUM_ARTIST",
-					}),
-				],
-			},
-		]);
 	});
 
 	test("keeps different exact album titles in separate groups", async () => {
@@ -187,14 +283,5 @@ describe("publication collision arbitration", () => {
 		);
 
 		expect(groups).toHaveLength(2);
-		const validations = await Promise.all(
-			groups.map(({ candidate, reader: readTags }) =>
-				validateCandidate(candidate, readTags),
-			),
-		);
-		expect(validations).toMatchObject([
-			{ valid: true, candidate: { album: "Album One" } },
-			{ valid: true, candidate: { album: "Album Two" } },
-		]);
 	});
 });

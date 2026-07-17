@@ -8,48 +8,43 @@ import {
 	rm,
 	symlink,
 } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
 import { mapBounded } from "../util/util";
 import type { PlannedSymlink } from "./plan";
 
-const SOURCE_VERIFICATION_CONCURRENCY = 32;
 const ALBUM_STAGING_CONCURRENCY = 4;
 const ENTRY_IO_CONCURRENCY = 8;
 
 export type PublicationInput = Readonly<{
 	root: string;
-	/** Stable tag-derived identity, never a sanitized output path. */
 	logicalReleaseKey: string;
 	albumArtist: string;
 	albumTitle: string;
 	entries: readonly PlannedSymlink[];
 }>;
-
 export type PublicationResult = Readonly<{
 	createdAlbums: number;
 	unchangedAlbums: number;
 	createdSymlinks: number;
 }>;
-
 export type PublicationHooks = Readonly<{
-	/** Test-only coordination point after staging and before commits. */
 	beforeCommit?: () => void | Promise<void>;
-	/** Test-only coordination point before each individual album commit. */
 	beforePublishAlbum?: (albumPath: string) => void | Promise<void>;
 }>;
-
 type AlbumPlan = Readonly<{
 	path: string;
 	artistPath: string;
 	entries: readonly PlannedSymlink[];
 }>;
-
-export class PublicationError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "PublicationError";
-	}
-}
+export class PublicationError extends Error {}
 
 function isMissing(error: unknown): boolean {
 	return (
@@ -59,10 +54,8 @@ function isMissing(error: unknown): boolean {
 		error.code === "ENOENT"
 	);
 }
-
-function isWithin(parentPath: string, childPath: string): boolean {
-	const difference = relative(parentPath, childPath);
-
+function isWithin(parent: string, child: string): boolean {
+	const difference = relative(parent, child);
 	return (
 		difference !== "" &&
 		difference !== ".." &&
@@ -70,290 +63,210 @@ function isWithin(parentPath: string, childPath: string): boolean {
 		!isAbsolute(difference)
 	);
 }
-
-async function pathStatus(path: string) {
+async function status(path: string) {
 	try {
 		return await lstat(path);
 	} catch (error) {
 		if (isMissing(error)) {
 			return undefined;
 		}
-
 		throw error;
 	}
 }
-
-function createAlbumPlans(
-	generatedLibraryRoot: string,
-	inputs: readonly PublicationInput[],
-): readonly AlbumPlan[] {
-	const albums = new Map<string, AlbumPlan>();
-	const destinations = new Set<string>();
-
+function plans(root: string, inputs: readonly PublicationInput[]): AlbumPlan[] {
+	const output = new Map<string, AlbumPlan>();
 	for (const input of inputs) {
-		if (input.entries.length === 0) {
-			throw new PublicationError(
-				`Candidate ${input.root} has no planned entries`,
-			);
-		}
-
-		const albumPath = dirname(input.entries[0].destinationPath);
-		const artistPath = dirname(albumPath);
-		if (!isWithin(generatedLibraryRoot, albumPath)) {
-			throw new PublicationError(
-				`Candidate ${input.root} escapes the generated-library root`,
-			);
-		}
-
-		const segments = relative(generatedLibraryRoot, albumPath).split(sep);
+		const path = dirname(input.entries[0]?.destinationPath ?? "");
+		const artistPath = dirname(path);
 		if (
-			segments.length !== 2 ||
-			segments.some((segment) => segment.length === 0)
+			input.entries.length === 0 ||
+			!isWithin(root, path) ||
+			relative(root, path).split(sep).length !== 2
 		) {
-			throw new PublicationError(
-				`Candidate ${input.root} does not target an artist/album directory`,
-			);
+			throw new PublicationError(`Unsafe album plan: ${input.root}`);
 		}
-
-		if (albums.has(albumPath)) {
-			throw new PublicationError(
-				`Multiple candidates target ${albumPath}`,
-			);
+		if (output.has(path)) {
+			throw new PublicationError(`Multiple candidates target ${path}`);
 		}
-
 		for (const entry of input.entries) {
 			if (
-				dirname(entry.destinationPath) !== albumPath ||
 				!isAbsolute(entry.sourcePath) ||
-				!isWithin(albumPath, entry.destinationPath) ||
-				destinations.has(entry.destinationPath)
+				dirname(entry.destinationPath) !== path ||
+				!isWithin(path, entry.destinationPath)
 			) {
 				throw new PublicationError(
-					`Candidate ${input.root} has an unsafe or duplicate planned destination`,
+					`Unsafe planned destination: ${entry.destinationPath}`,
 				);
 			}
-
-			destinations.add(entry.destinationPath);
 		}
-
-		albums.set(albumPath, {
-			path: albumPath,
-			artistPath,
-			entries: input.entries,
-		});
+		output.set(path, { path, artistPath, entries: input.entries });
 	}
-
-	return [...albums.values()].toSorted((first, second) =>
-		first.path.localeCompare(second.path),
+	return [...output.values()].toSorted((a, b) =>
+		a.path.localeCompare(b.path),
 	);
 }
-
-async function verifySourceFiles(albums: readonly AlbumPlan[]): Promise<void> {
-	const entries = albums.flatMap((album) => album.entries);
-	await mapBounded(
-		entries,
-		async (entry) => {
-			const status = await pathStatus(entry.sourcePath);
-			if (
-				status === undefined ||
-				status.isSymbolicLink() ||
-				!status.isFile()
-			) {
-				throw new PublicationError(
-					`Planned source is not a real source file: ${entry.sourcePath}`,
-				);
-			}
-		},
-		SOURCE_VERIFICATION_CONCURRENCY,
-	);
-}
-
-async function verifyExactAlbum(album: AlbumPlan): Promise<boolean> {
-	const expectedEntries = new Map(
-		album.entries.map((entry) => [basename(entry.destinationPath), entry]),
-	);
-
-	const entries = await readdir(album.path, { withFileTypes: true });
-	if (entries.length !== expectedEntries.size) {
+async function exactEntries(
+	path: string,
+	entries: readonly PlannedSymlink[],
+): Promise<boolean> {
+	try {
+		const expected = new Map(
+			entries.map((entry) => [
+				basename(entry.destinationPath),
+				entry.sourcePath,
+			]),
+		);
+		const output = await readdir(path, { withFileTypes: true });
+		if (output.length !== expected.size) {
+			return false;
+		}
+		return (
+			await mapBounded(
+				output,
+				async (entry) =>
+					entry.isSymbolicLink() &&
+					expected.get(entry.name) ===
+						(await readlink(join(path, entry.name))),
+				ENTRY_IO_CONCURRENCY,
+			)
+		).every(Boolean);
+	} catch {
 		return false;
 	}
-
-	const matches = await mapBounded(
-		entries,
-		async (entry) => {
-			const expected = expectedEntries.get(entry.name);
-			if (expected === undefined) {
-				return false;
-			}
-
-			const path = join(album.path, entry.name);
-			const status = await lstat(path);
-			return (
-				status.isSymbolicLink() &&
-				(await readlink(path)) === expected.sourcePath
-			);
-		},
-		ENTRY_IO_CONCURRENCY,
-	);
-
-	return matches.every(Boolean);
 }
-
-async function inspectGeneratedLibrary(
-	generatedLibraryRoot: string,
+async function ownedLeaf(
+	leaf: string,
+	versionRoot: string,
+): Promise<string | undefined> {
+	try {
+		const leafStatus = await lstat(leaf);
+		if (!leafStatus.isSymbolicLink()) {
+			return undefined;
+		}
+		const target = await readlink(leaf);
+		const version = resolve(dirname(leaf), target);
+		if (!isWithin(versionRoot, version)) {
+			return undefined;
+		}
+		const versionStatus = await lstat(version);
+		return versionStatus.isDirectory() && !versionStatus.isSymbolicLink()
+			? version
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+async function inspectRoot(
+	root: string,
 	albums: readonly AlbumPlan[],
-): Promise<Set<string>> {
-	const albumPaths = new Map(albums.map((album) => [album.path, album]));
-	const expectedArtists = new Map<string, Set<string>>();
-
+): Promise<void> {
+	const byArtist = new Map<string, Set<string>>();
 	for (const album of albums) {
-		const existing =
-			expectedArtists.get(album.artistPath) ?? new Set<string>();
-
-		existing.add(album.path);
-		expectedArtists.set(album.artistPath, existing);
+		const expected = byArtist.get(album.artistPath) ?? new Set<string>();
+		expected.add(album.path);
+		byArtist.set(album.artistPath, expected);
 	}
-
-	const rootStatus = await pathStatus(generatedLibraryRoot);
-	if (rootStatus === undefined) {
-		return new Set<string>();
-	}
-
-	if (rootStatus.isSymbolicLink() || !rootStatus.isDirectory()) {
-		throw new PublicationError(
-			`Generated-library root is not a directory: ${generatedLibraryRoot}`,
-		);
-	}
-
-	const unchanged = new Set<string>();
-	for (const artistEntry of await readdir(generatedLibraryRoot, {
-		withFileTypes: true,
-	})) {
-		const artistPath = join(generatedLibraryRoot, artistEntry.name);
-		const expectedAlbums = expectedArtists.get(artistPath);
-
+	for (const artist of await readdir(root, { withFileTypes: true })) {
+		if (artist.name === ".siftone") {
+			continue;
+		}
+		const artistPath = join(root, artist.name);
+		const expected = byArtist.get(artistPath);
 		if (
-			expectedAlbums === undefined ||
-			artistEntry.isSymbolicLink() ||
-			!artistEntry.isDirectory()
+			expected === undefined ||
+			!artist.isDirectory() ||
+			artist.isSymbolicLink()
 		) {
 			throw new PublicationError(
 				`Unmanaged generated-library entry: ${artistPath}`,
 			);
 		}
-
-		for (const albumEntry of await readdir(artistPath, {
+		for (const album of await readdir(artistPath, {
 			withFileTypes: true,
 		})) {
-			const albumPath = join(artistPath, albumEntry.name);
-			const album = albumPaths.get(albumPath);
-
-			if (
-				album === undefined ||
-				albumEntry.isSymbolicLink() ||
-				!albumEntry.isDirectory()
-			) {
+			if (!expected.has(join(artistPath, album.name))) {
 				throw new PublicationError(
-					`Unmanaged generated-library entry: ${albumPath}`,
+					`Unmanaged generated-library entry: ${join(artistPath, album.name)}`,
 				);
 			}
-
-			if (!(await verifyExactAlbum(album))) {
-				throw new PublicationError(
-					`Existing generated album does not exactly match its plan: ${albumPath}`,
-				);
-			}
-
-			unchanged.add(albumPath);
 		}
 	}
-
-	return unchanged;
 }
-
-async function ensureRealDirectory(
-	path: string,
-	description: string,
-): Promise<Awaited<ReturnType<typeof lstat>>> {
-	const status = await lstat(path);
-
-	if (status.isSymbolicLink() || !status.isDirectory()) {
-		throw new PublicationError(
-			`${description} is not a real directory: ${path}`,
-		);
-	}
-
-	return status;
-}
-
-async function ensureSafeArtistDirectory(artistPath: string): Promise<void> {
-	await ensureRealDirectory(artistPath, "Generated artist path");
-}
-
-async function ensureDestinationIsMissing(
-	destinationPath: string,
-): Promise<void> {
-	if ((await pathStatus(destinationPath)) !== undefined) {
-		throw new PublicationError(
-			`Generated album appeared during publication: ${destinationPath}`,
-		);
-	}
-}
-
-async function createStagedAlbum(
-	stagingPath: string,
-	album: AlbumPlan,
-): Promise<void> {
-	await mkdir(stagingPath);
+async function stageAlbum(path: string, album: AlbumPlan): Promise<void> {
+	await mkdir(path);
 	await mapBounded(
 		album.entries,
 		async (entry) => {
-			const sourceStatus = await pathStatus(entry.sourcePath);
-
-			if (
-				sourceStatus === undefined ||
-				sourceStatus.isSymbolicLink() ||
-				!sourceStatus.isFile()
-			) {
+			const source = await lstat(entry.sourcePath);
+			if (!source.isFile() || source.isSymbolicLink()) {
 				throw new PublicationError(
-					`Planned source changed before publication: ${entry.sourcePath}`,
+					`Planned source is not a real file: ${entry.sourcePath}`,
 				);
 			}
-
 			await symlink(
 				entry.sourcePath,
-				join(stagingPath, basename(entry.destinationPath)),
+				join(path, basename(entry.destinationPath)),
 			);
 		},
 		ENTRY_IO_CONCURRENCY,
 	);
 }
 
-/**
- * Publishes complete planned albums without ever replacing or adopting an
- * existing generated entry. Exact prior output is treated as an idempotent
- * success; every other pre-existing entry aborts before new albums are made.
- */
+/** A standalone publisher with the same immutable-version/public-leaf swap protocol as reconciliation. */
 export async function publishPlans({
 	generatedLibraryRoot,
 	stagingRoot,
+	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
 	inputs,
 	beforeCommit,
 	beforePublishAlbum,
 }: Readonly<{
 	generatedLibraryRoot: string;
 	stagingRoot: string;
+	versionRoot?: string;
 	inputs: readonly PublicationInput[];
 }> &
 	PublicationHooks): Promise<PublicationResult> {
-	const albums = createAlbumPlans(generatedLibraryRoot, inputs);
-	await verifySourceFiles(albums);
-
-	const unchanged = await inspectGeneratedLibrary(
-		generatedLibraryRoot,
-		albums,
-	);
-
+	const albums = plans(generatedLibraryRoot, inputs);
+	await Promise.all([
+		mkdir(generatedLibraryRoot, { recursive: true }),
+		mkdir(stagingRoot, { recursive: true }),
+		mkdir(versionRoot, { recursive: true }),
+	]);
+	for (const [path, description] of [
+		[generatedLibraryRoot, "Generated-library root"],
+		[stagingRoot, "Staging root"],
+		[versionRoot, "Version root"],
+	] as const) {
+		const root = await lstat(path);
+		if (!root.isDirectory() || root.isSymbolicLink()) {
+			throw new PublicationError(
+				`${description} is not a real directory`,
+			);
+		}
+	}
+	await inspectRoot(generatedLibraryRoot, albums);
+	const unchanged = new Set<string>();
+	for (const album of albums) {
+		const existing = await status(album.path);
+		if (existing === undefined) {
+			continue;
+		}
+		const version = await ownedLeaf(album.path, versionRoot);
+		if (version === undefined) {
+			if (existing.isDirectory() && !existing.isSymbolicLink()) {
+				throw new PublicationError(
+					`Existing generated album does not exactly match its plan: ${album.path}`,
+				);
+			}
+			throw new PublicationError(
+				`Unmanaged generated-library entry: ${album.path}`,
+			);
+		}
+		if (await exactEntries(version, album.entries)) {
+			unchanged.add(album.path);
+		}
+	}
 	const pending = albums.filter((album) => !unchanged.has(album.path));
 	if (pending.length === 0) {
 		return {
@@ -362,65 +275,55 @@ export async function publishPlans({
 			createdSymlinks: 0,
 		};
 	}
-
-	await mkdir(generatedLibraryRoot, { recursive: true });
-	await mkdir(stagingRoot, { recursive: true });
-
-	const [generatedStatus, stagingStatus] = await Promise.all([
-		ensureRealDirectory(generatedLibraryRoot, "Generated-library root"),
-		ensureRealDirectory(stagingRoot, "Staging root"),
-	]);
-
-	if (generatedStatus.dev !== stagingStatus.dev) {
-		throw new PublicationError(
-			"Staging and generated-library roots must be on the same filesystem",
-		);
-	}
-
-	let operationPath: string | undefined;
+	const operation = await mkdtemp(join(stagingRoot, "publication-"));
 	try {
-		const stagingOperationPath = await mkdtemp(
-			join(stagingRoot, "publication-"),
-		);
-
-		operationPath = stagingOperationPath;
-
 		await mapBounded(
 			pending.map((album, index) => ({ album, index })),
 			({ album, index }) =>
-				createStagedAlbum(
-					join(stagingOperationPath, String(index)),
-					album,
-				),
+				stageAlbum(join(operation, String(index)), album),
 			ALBUM_STAGING_CONCURRENCY,
 		);
-
 		await beforeCommit?.();
-
-		// Commits remain serial: partial success is deliberate and hooks observe order.
 		await mapBounded(
 			pending.map((album, index) => ({ album, index })),
 			async ({ album, index }) => {
 				await beforePublishAlbum?.(album.path);
 				await mkdir(album.artistPath, { recursive: true });
-				await ensureSafeArtistDirectory(album.artistPath);
-				await ensureDestinationIsMissing(album.path);
-				await rename(
-					join(stagingOperationPath, String(index)),
-					album.path,
+				const artist = await lstat(album.artistPath);
+				if (!artist.isDirectory() || artist.isSymbolicLink()) {
+					throw new PublicationError(
+						`Generated artist path is unsafe: ${album.artistPath}`,
+					);
+				}
+				const version = join(
+					versionRoot,
+					`${basename(operation)}-${index}`,
 				);
+				await rename(join(operation, String(index)), version);
+				const temporary = join(
+					dirname(album.path),
+					`.siftone-link-${basename(operation)}-${index}`,
+				);
+				await symlink(
+					relative(dirname(album.path), version),
+					temporary,
+				);
+				const existing = await status(album.path);
+				if (
+					existing !== undefined &&
+					(await ownedLeaf(album.path, versionRoot)) === undefined
+				) {
+					throw new PublicationError(
+						`Generated album appeared during publication: ${album.path}`,
+					);
+				}
+				await rename(temporary, album.path);
 			},
 			1,
 		);
 	} finally {
-		if (operationPath !== undefined) {
-			await rm(operationPath, {
-				force: true,
-				recursive: true,
-			});
-		}
+		await rm(operation, { recursive: true, force: true });
 	}
-
 	return {
 		createdAlbums: pending.length,
 		unchangedAlbums: unchanged.size,

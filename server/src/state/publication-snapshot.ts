@@ -130,16 +130,10 @@ export async function entriesMatch(
 	entries: readonly SourceEntry[],
 ): Promise<boolean> {
 	try {
-		const [destinationStatus, artistStatus] = await Promise.all([
-			lstat(destination),
-			lstat(dirname(destination)),
-		]);
-
+		const destinationStatus = await lstat(destination);
 		if (
 			destinationStatus.isSymbolicLink() ||
-			!destinationStatus.isDirectory() ||
-			artistStatus.isSymbolicLink() ||
-			!artistStatus.isDirectory()
+			!destinationStatus.isDirectory()
 		) {
 			return false;
 		}

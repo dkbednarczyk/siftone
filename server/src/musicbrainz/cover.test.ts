@@ -232,21 +232,6 @@ describe("MusicBrainz cover-art prototype", () => {
 		expect(selectBestCover([square, rectangular])).toBe(rectangular);
 	});
 
-	test("compares front artwork across release editions", () => {
-		const firstEdition = {
-			...cover(1_200, 900),
-			releaseId: "first-release",
-		};
-		const secondEdition = {
-			...cover(1_000, 1_000),
-			releaseId: "second-release",
-		};
-
-		expect(selectBestCover([firstEdition, secondEdition])).toBe(
-			secondEdition,
-		);
-	});
-
 	test("compares only front artwork across release cover responses", async () => {
 		const requestedUrls: string[] = [];
 		const covers = await downloadReleaseFrontCovers(

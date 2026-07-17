@@ -7,18 +7,22 @@ import {
 	ensureDestinationParent,
 	InvalidOperationState,
 	isMissing,
+	isOwnedPublicLeaf,
 	operationPaths,
+	relativeVersionTarget,
 } from "../operation-paths";
 import { entriesMatch, manifestHash } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
-import {
-	destinationEntries,
-	operationEntries,
-	priorDestination,
-} from "./operation-entries";
+import { operationEntries } from "./operation-entries";
 import type { OperationRow, SourceEntry } from "./types";
 
 const ENTRY_IO_CONCURRENCY = 8;
+
+type PriorVersion = Readonly<{
+	destination_path: string;
+	version_id: string;
+	version_path: string;
+}>;
 
 async function stage(
 	entries: readonly SourceEntry[],
@@ -45,7 +49,6 @@ async function stage(
 	);
 
 	await mkdir(path, { recursive: true });
-
 	await mapBounded(
 		entries,
 		(entry) => symlink(entry.sourcePath, join(path, entry.destinationName)),
@@ -65,251 +68,349 @@ function updatePhase(
 	);
 }
 
-function finalizeOperation(
+function priorVersion(
+	state: ImportState,
+	importId: string,
+): PriorVersion | null {
+	return state.database
+		.query<PriorVersion, [string]>(`
+			SELECT pd.destination_path, pd.version_id, av.version_path
+			FROM published_destinations pd
+			JOIN album_versions av ON av.id = pd.version_id
+			WHERE pd.import_id = ?
+		`)
+		.get(importId);
+}
+
+function finalizeDelete(
+	state: ImportState,
+	operation: OperationRow,
+	prior: PriorVersion,
+): void {
+	immediate(state, () => {
+		state.database.run(
+			"UPDATE album_versions SET state = 'retired', retired_at_ns = ? WHERE id = ? AND state = 'current'",
+			[nowNs(), prior.version_id],
+		);
+		state.database.run("DELETE FROM operations WHERE id = ?", [
+			operation.id,
+		]);
+		state.database.run("DELETE FROM imports WHERE id = ?", [
+			operation.import_id,
+		]);
+		state.database.run("DELETE FROM source_releases WHERE id = ?", [
+			operation.source_release_id,
+		]);
+		state.database.run(
+			"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM source_releases)",
+		);
+	});
+}
+
+function finalizePublication(
 	state: ImportState,
 	operation: OperationRow,
 	entries: readonly SourceEntry[],
-	deleteImport: boolean,
+	prior: PriorVersion | null,
 ): void {
+	if (operation.version_id === null) {
+		throw new InvalidOperationState(
+			"Publication operation has no version identity",
+		);
+	}
+
 	immediate(state, () => {
-		if (deleteImport) {
-			state.database.run("DELETE FROM operations WHERE id = ?", [
-				operation.id,
-			]);
-
-			state.database.run("DELETE FROM imports WHERE id = ?", [
-				operation.import_id,
-			]);
-
-			state.database.run("DELETE FROM source_releases WHERE id = ?", [
-				operation.source_release_id,
-			]);
-
-			state.database.run(
-				"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM source_releases)",
+		const timestamp = nowNs();
+		const promoted = state.database.run(
+			"UPDATE album_versions SET import_id = ?, state = 'current', published_at_ns = ?, retired_at_ns = NULL WHERE id = ? AND state = 'pending'",
+			[operation.import_id, timestamp, operation.version_id],
+		);
+		if (promoted.changes !== 1) {
+			throw new InvalidOperationState(
+				"Pending version cannot be promoted",
 			);
-
-			return;
 		}
 
-		let destination = state.database
+		const destination = state.database
 			.query<{ id: string }, [string]>(
 				"SELECT id FROM published_destinations WHERE import_id = ?",
 			)
 			.get(operation.import_id);
-
+		const destinationId = destination?.id ?? randomUUID();
 		if (destination === null) {
-			const id = randomUUID();
-
 			state.database.run(
-				"INSERT INTO published_destinations (id, import_id, destination_path, published_at_ns) VALUES (?, ?, ?, ?)",
+				"INSERT INTO published_destinations (id, import_id, version_id, destination_path, published_at_ns) VALUES (?, ?, ?, ?, ?)",
 				[
-					id,
+					destinationId,
 					operation.import_id,
+					operation.version_id,
 					operation.target_destination_path,
-					nowNs(),
+					timestamp,
 				],
 			);
-
-			destination = { id };
 		} else {
 			state.database.run(
-				"UPDATE published_destinations SET destination_path = ?, published_at_ns = ? WHERE id = ?",
-				[operation.target_destination_path, nowNs(), destination.id],
+				"UPDATE published_destinations SET version_id = ?, destination_path = ?, published_at_ns = ? WHERE id = ?",
+				[
+					operation.version_id,
+					operation.target_destination_path,
+					timestamp,
+					destinationId,
+				],
 			);
 		}
 
 		state.database.run(
 			"DELETE FROM destination_entries WHERE destination_id = ?",
-			[destination.id],
+			[destinationId],
 		);
-
-		const insertedEntries = state.database.run(
-			`INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind)
-			SELECT ?, oe.destination_name, 'source', oe.source_path, NULL, oe.size, oe.mtime_ns, oe.kind
-			FROM operation_entries oe
-			JOIN source_files sf ON sf.source_path = oe.source_path
-			WHERE oe.operation_id = ? AND oe.origin = 'source' AND sf.source_release_id = ?`,
-			[destination.id, operation.id, operation.source_release_id],
-		).changes;
-
-		if (insertedEntries !== entries.length) {
-			throw new Error("Frozen source file disappeared from state");
+		for (const entry of entries) {
+			state.database.run(
+				"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
+				[
+					destinationId,
+					entry.destinationName,
+					entry.sourcePath,
+					entry.size,
+					entry.mtimeNs,
+					entry.kind,
+				],
+			);
 		}
 
+		state.database.run(
+			"UPDATE imports SET manifest_hash = ?, updated_at_ns = ? WHERE id = ?",
+			[manifestHash(entries), timestamp, operation.import_id],
+		);
 		state.database.run(
 			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ? AND origin = 'source')",
 			[operation.source_release_id, operation.id],
 		);
-
-		state.database.run(
-			"UPDATE imports SET manifest_hash = ?, updated_at_ns = ? WHERE id = ?",
-			[manifestHash(entries), nowNs(), operation.import_id],
-		);
-
+		if (prior !== null && prior.version_id !== operation.version_id) {
+			state.database.run(
+				"UPDATE album_versions SET state = 'retired', retired_at_ns = ? WHERE id = ? AND state = 'current'",
+				[timestamp, prior.version_id],
+			);
+		}
 		state.database.run("DELETE FROM operations WHERE id = ?", [
 			operation.id,
 		]);
 	});
 }
 
+async function removeOwnedTemporaryLink(
+	temporaryLink: string,
+	destination: string,
+	version: string,
+): Promise<void> {
+	if (await isMissing(temporaryLink)) {
+		return;
+	}
+
+	const target = relativeVersionTarget(destination, version);
+	const status = await lstat(temporaryLink);
+	if (!status.isSymbolicLink()) {
+		throw new InvalidOperationState(
+			`Temporary link is unsafe: ${temporaryLink}`,
+		);
+	}
+
+	const { readlink } = await import("node:fs/promises");
+	if ((await readlink(temporaryLink)) !== target) {
+		throw new InvalidOperationState(
+			`Temporary link does not belong to operation: ${temporaryLink}`,
+		);
+	}
+	await rm(temporaryLink, { force: false });
+}
+
 export async function executeOperation(
 	state: ImportState,
 	generatedLibraryRoot: string,
 	stagingRoot: string,
+	versionRoot: string,
 	operation: OperationRow,
 ): Promise<void> {
 	const entries = operationEntries(state, operation.id);
 	const paths = operationPaths(
 		generatedLibraryRoot,
 		stagingRoot,
+		versionRoot,
 		operation.staging_path,
 		operation.target_destination_path,
+		operation.version_path,
 		operation.id,
 	);
-
-	const oldPath = priorDestination(state, operation.import_id);
-
-	const oldFsPath =
-		oldPath === null
-			? null
-			: operationPaths(
-					generatedLibraryRoot,
-					stagingRoot,
-					operation.staging_path,
-					oldPath,
-					operation.id,
-				).destination;
+	const prior = priorVersion(state, operation.import_id);
 
 	try {
-		if (
-			operation.kind !== "delete" &&
-			(await entriesMatch(paths.destination, entries))
-		) {
-			await rm(paths.staging, {
-				recursive: true,
-				force: true,
-			});
-
-			await rm(paths.tombstone, {
-				recursive: true,
-				force: true,
-			});
-
-			finalizeOperation(state, operation, entries, false);
+		if (operation.kind === "delete") {
+			if (prior === null) {
+				throw new InvalidOperationState(
+					"Delete operation has no published version",
+				);
+			}
+			if (operation.phase === "planned") {
+				updatePhase(state, operation.id, "staged");
+				operation.phase = "staged";
+			}
+			if (operation.phase === "staged") {
+				if (!(await isMissing(prior.destination_path))) {
+					if (
+						!(await isOwnedPublicLeaf(
+							prior.destination_path,
+							prior.version_path,
+							versionRoot,
+						))
+					) {
+						throw new InvalidOperationState(
+							`Refusing to delete unowned leaf: ${prior.destination_path}`,
+						);
+					}
+					await rm(prior.destination_path, { force: false });
+				}
+				updatePhase(state, operation.id, "swapped");
+				operation.phase = "swapped";
+			}
+			if (operation.phase === "swapped") {
+				finalizeDelete(state, operation, prior);
+			}
 
 			return;
 		}
 
-		if (operation.phase === "planned" && operation.kind !== "delete") {
+		if (paths.version === null || operation.version_id === null) {
+			throw new InvalidOperationState(
+				"Publication operation has no version identity",
+			);
+		}
+		const versionRecord = state.database
+			.query<{ version_path: string }, [string, string]>(
+				"SELECT version_path FROM album_versions WHERE id = ? AND origin_operation_id = ? AND state = 'pending'",
+			)
+			.get(operation.version_id, operation.id);
+		if (versionRecord?.version_path !== paths.version) {
+			throw new InvalidOperationState(
+				"Operation version record is invalid",
+			);
+		}
+		if (operation.phase === "planned") {
 			await stage(entries, paths.staging);
 			updatePhase(state, operation.id, "staged");
 			operation.phase = "staged";
 		}
-
-		if (operation.phase === "planned" && operation.kind === "delete") {
-			updatePhase(state, operation.id, "staged");
-			operation.phase = "staged";
+		if (operation.phase === "staged") {
+			if (await isMissing(paths.version)) {
+				await rename(paths.staging, paths.version);
+			} else if (!(await isMissing(paths.staging))) {
+				throw new InvalidOperationState(
+					`Version and staging both exist: ${paths.version}`,
+				);
+			}
+			if (!(await entriesMatch(paths.version, entries))) {
+				throw new InvalidOperationState(
+					`Version does not match operation: ${paths.version}`,
+				);
+			}
+			updatePhase(state, operation.id, "versioned");
+			operation.phase = "versioned";
 		}
-
-		if (
-			operation.phase === "staged" &&
-			oldFsPath !== null &&
-			!(await isMissing(oldFsPath))
-		) {
-			await ensureDestinationParent(generatedLibraryRoot, oldFsPath);
-
-			await ensureDestinationParent(
-				generatedLibraryRoot,
-				paths.tombstone,
-			);
-
-			const oldEntries = destinationEntries(state, operation.import_id);
-
+		if (operation.phase === "versioned") {
 			if (
-				operation.kind !== "repair" &&
-				operation.kind !== "delete" &&
-				!(await entriesMatch(oldFsPath, oldEntries))
+				!(await isOwnedPublicLeaf(
+					paths.destination,
+					paths.version,
+					versionRoot,
+				))
+			) {
+				if (prior === null) {
+					if (!(await isMissing(paths.destination))) {
+						throw new InvalidOperationState(
+							`Destination exists: ${paths.destination}`,
+						);
+					}
+				} else {
+					if (
+						!(await isOwnedPublicLeaf(
+							prior.destination_path,
+							prior.version_path,
+							versionRoot,
+						))
+					) {
+						throw new InvalidOperationState(
+							`Refusing to replace unowned leaf: ${prior.destination_path}`,
+						);
+					}
+					if (
+						prior.destination_path !== paths.destination &&
+						!(await isMissing(paths.destination))
+					) {
+						throw new InvalidOperationState(
+							`Destination exists: ${paths.destination}`,
+						);
+					}
+				}
+
+				await ensureDestinationParent(
+					generatedLibraryRoot,
+					paths.destination,
+				);
+				await removeOwnedTemporaryLink(
+					paths.temporaryLink,
+					paths.destination,
+					paths.version,
+				);
+				await symlink(
+					relativeVersionTarget(paths.destination, paths.version),
+					paths.temporaryLink,
+				);
+				await rename(paths.temporaryLink, paths.destination);
+			} else {
+				await removeOwnedTemporaryLink(
+					paths.temporaryLink,
+					paths.destination,
+					paths.version,
+				);
+			}
+			updatePhase(state, operation.id, "swapped");
+			operation.phase = "swapped";
+		}
+		if (operation.phase === "swapped") {
+			if (
+				prior !== null &&
+				prior.destination_path !== paths.destination &&
+				!(await isMissing(prior.destination_path))
+			) {
+				if (
+					!(await isOwnedPublicLeaf(
+						prior.destination_path,
+						prior.version_path,
+						versionRoot,
+					))
+				) {
+					throw new InvalidOperationState(
+						`Refusing to remove unowned prior leaf: ${prior.destination_path}`,
+					);
+				}
+				await rm(prior.destination_path, { force: false });
+			}
+			if (
+				!(await isOwnedPublicLeaf(
+					paths.destination,
+					paths.version,
+					versionRoot,
+				))
 			) {
 				throw new InvalidOperationState(
-					`Refusing to replace drifted output: ${oldFsPath}`,
+					`Published leaf is not owned: ${paths.destination}`,
 				);
 			}
-
-			if (!(await isMissing(paths.tombstone))) {
-				throw new InvalidOperationState(
-					`Tombstone exists: ${paths.tombstone}`,
-				);
-			}
-
-			await rename(oldFsPath, paths.tombstone);
-			updatePhase(state, operation.id, "tombstoned");
-
-			operation.phase = "tombstoned";
-		}
-
-		if (
-			operation.phase === "staged" &&
-			(oldFsPath === null || (await isMissing(oldFsPath)))
-		) {
-			if (
-				oldFsPath !== null &&
-				(await isMissing(paths.tombstone)) &&
-				operation.kind !== "repair"
-			) {
-				throw new InvalidOperationState(
-					`Published destination disappeared before replacement: ${oldFsPath}`,
-				);
-			}
-
-			updatePhase(state, operation.id, "tombstoned");
-
-			operation.phase = "tombstoned";
-		}
-
-		if (operation.phase === "tombstoned" && operation.kind !== "delete") {
-			await ensureDestinationParent(
-				generatedLibraryRoot,
-				paths.destination,
-			);
-
-			if (!(await isMissing(paths.destination))) {
-				throw new InvalidOperationState(
-					`Destination exists: ${paths.destination}`,
-				);
-			}
-
-			await rename(paths.staging, paths.destination);
-			updatePhase(state, operation.id, "published");
-
-			operation.phase = "published";
-		}
-
-		if (operation.phase === "tombstoned" && operation.kind === "delete") {
-			await rm(paths.tombstone, {
-				recursive: true,
-				force: true,
-			});
-
-			finalizeOperation(state, operation, entries, true);
-
-			return;
-		}
-
-		if (operation.phase === "published") {
-			await rm(paths.tombstone, {
-				recursive: true,
-				force: true,
-			});
-
-			finalizeOperation(state, operation, entries, false);
+			finalizePublication(state, operation, entries, prior);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-
 		if (error instanceof InvalidOperationState) {
 			updatePhase(state, operation.id, "attention_required", message);
-
 			state.database.run(
 				"INSERT OR IGNORE INTO reviews (id, import_id, operation_id, kind, details_json, created_at_ns) VALUES (?, NULL, ?, 'attention_required', ?, ?)",
 				[
@@ -319,10 +420,12 @@ export async function executeOperation(
 					nowNs(),
 				],
 			);
-		} else
+		} else {
 			state.database.run(
 				"UPDATE operations SET error_message = ?, updated_at_ns = ? WHERE id = ?",
 				[message, nowNs(), operation.id],
 			);
+		}
+		throw error;
 	}
 }

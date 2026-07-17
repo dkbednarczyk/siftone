@@ -57,7 +57,7 @@ function seed(state: Awaited<ReturnType<typeof openImportState>>) {
 		"a".repeat(64),
 	]);
 	state.database.run(
-		"INSERT INTO published_destinations VALUES (?, ?, ?, 1)",
+		"INSERT INTO published_destinations (id, import_id, destination_path, published_at_ns) VALUES (?, ?, ?, 1)",
 		[ids[3], ids[2], destinationPath],
 	);
 	return ids[2];
@@ -214,7 +214,7 @@ describe("library state", () => {
 		const destinationImport = insertImport(state);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO published_destinations VALUES (?, ?, 'Artist/Album', 1)",
+				"INSERT INTO published_destinations (id, import_id, destination_path, published_at_ns) VALUES (?, ?, 'Artist/Album', 1)",
 				[randomUUID(), destinationImport.importId],
 			),
 		).toThrow();
@@ -227,7 +227,7 @@ describe("library state", () => {
 		const targetImport = insertImport(state);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Album', ?, NULL, 1, 1)",
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', 'Artist/Album', ?, NULL, NULL, NULL, 1, 1)",
 				[
 					randomUUID(),
 					targetImport.importId,
@@ -239,7 +239,7 @@ describe("library state", () => {
 		const stagingImport = insertImport(state);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, 'operation', NULL, 1, 1)",
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, 'operation', NULL, NULL, NULL, 1, 1)",
 				[
 					randomUUID(),
 					stagingImport.importId,
@@ -251,7 +251,7 @@ describe("library state", () => {
 		const operationImport = insertImport(state);
 		const operationId = randomUUID();
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 			[
 				operationId,
 				operationImport.importId,
@@ -297,7 +297,7 @@ describe("library state", () => {
 			[ids[3], sourcePath],
 		);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'replace', 'planned', ?, ?, NULL, 1, 1)",
+			"INSERT INTO operations VALUES (?, ?, ?, 'replace', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
 		);
 		state.database.run(
@@ -450,7 +450,7 @@ describe("library state", () => {
 		seed(state);
 		insertCacheObject(state);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
 		);
 
@@ -506,7 +506,7 @@ describe("library state", () => {
 			[ids[3], cacheSha256],
 		);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
 		);
 		state.database.run(
@@ -590,7 +590,7 @@ describe("library state", () => {
 		const importId = seed(state);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO published_destinations VALUES (?, ?, ?, 1)",
+				"INSERT INTO published_destinations (id, import_id, destination_path, published_at_ns) VALUES (?, ?, ?, 1)",
 				[
 					"55555555-5555-4555-8555-555555555555",
 					importId,
@@ -665,7 +665,7 @@ describe("library state", () => {
 		});
 		const importId = seed(state);
 		state.database.run(
-			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 			[
 				"55555555-5555-4555-8555-555555555555",
 				importId,
@@ -676,7 +676,7 @@ describe("library state", () => {
 		);
 		expect(() =>
 			state.database.run(
-				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, 1, 1)",
+				"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
 				[
 					"66666666-6666-4666-8666-666666666666",
 					importId,

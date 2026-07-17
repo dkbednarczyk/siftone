@@ -149,7 +149,7 @@ describe("server configuration", () => {
 					join(defaultHomeDirectory, ".siftone", "cache"),
 				),
 				stagingRoot: await realpath(
-					join(defaultRootParent, ".siftone-staging"),
+					join(defaultRootParent, "generated", ".siftone", "staging"),
 				),
 				stateRoot: await realpath(
 					join(defaultHomeDirectory, ".siftone", "state"),
@@ -216,6 +216,30 @@ describe("server configuration", () => {
 		);
 		await expect(loadExplicitConfig(missingPathsPath)).rejects.toThrow(
 			"paths: Invalid input",
+		);
+	});
+
+	test("defaults and validates the reconciliation interval", async () => {
+		const directory = await makeTemporaryDirectory();
+		const configPath = await writeConfig(directory);
+		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+			reconciliationIntervalSeconds: 300,
+		});
+
+		await writeFile(
+			configPath,
+			`[server]\nreconciliation_interval_seconds = 60\n\n${tomlPaths()}`,
+		);
+		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
+			reconciliationIntervalSeconds: 60,
+		});
+
+		await writeFile(
+			configPath,
+			`[server]\nreconciliation_interval_seconds = 0\n\n${tomlPaths()}`,
+		);
+		await expect(loadExplicitConfig(configPath)).rejects.toThrow(
+			"server.reconciliation_interval_seconds",
 		);
 	});
 
@@ -418,7 +442,7 @@ describe("server configuration", () => {
 					join(defaultHomeDirectory, ".siftone", "cache"),
 				),
 				stagingRoot: await realpath(
-					join(generatedTarget, ".siftone-staging"),
+					join(generatedTarget, "library", ".siftone", "staging"),
 				),
 				stateRoot: await realpath(
 					join(defaultHomeDirectory, ".siftone", "state"),

@@ -1,3 +1,12 @@
+[server]
+# A complete bounded source traversal runs at this cadence.
+reconciliation_interval_seconds = 300
+
 [paths]
-watch_root = "/Volumes/Crucial"
-generated_library_root = "/Users/damianbednarczyk/Music/Siftone"
+watch_root = "/mnt/f"
+generated_library_root = "/home/damian/Music"
+# staging_root and version_root default under /home/damian/Music/.siftone/
+
+[publication]
+# Retain old immutable versions long enough for scanners that resolved them.
+version_retention_hours = 24

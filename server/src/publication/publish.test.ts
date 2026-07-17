@@ -10,7 +10,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
 	PublicationError,
 	type PublicationHooks,
@@ -103,6 +103,13 @@ describe("publication", () => {
 			createdSymlinks: 2,
 		});
 
+		const leaf = join(directory, "generated", "Artist", "Album");
+		const target = await readlink(leaf);
+		expect((await lstat(leaf)).isSymbolicLink()).toBe(true);
+		expect(target.startsWith("/")).toBe(false);
+		expect(
+			(await lstat(resolve(dirname(leaf), target))).isDirectory(),
+		).toBe(true);
 		for (const entry of input.entries) {
 			const status = await lstat(entry.destinationPath);
 			expect(status.isSymbolicLink()).toBe(true);
@@ -111,6 +118,55 @@ describe("publication", () => {
 			);
 		}
 		expect(await readdir(join(directory, "staging"))).toEqual([]);
+	});
+
+	test("replaces an owned public leaf while retaining its prior version", async () => {
+		const directory = await makeTemporaryDirectory();
+		const input = await createInput(directory);
+		await publish(directory, [input]);
+		const leaf = join(directory, "generated", "Artist", "Album");
+		const firstVersion = resolve(dirname(leaf), await readlink(leaf));
+		const replacement: PublicationInput = {
+			...input,
+			entries: input.entries.map((entry) => ({
+				...entry,
+				destinationPath: entry.destinationPath.replace(
+					"First",
+					"Replaced",
+				),
+			})),
+		};
+
+		await publish(directory, [replacement]);
+		const secondVersion = resolve(dirname(leaf), await readlink(leaf));
+		expect(secondVersion).not.toBe(firstVersion);
+		expect((await lstat(firstVersion)).isDirectory()).toBe(true);
+		expect(
+			(await lstat(join(leaf, "01 Replaced.flac"))).isSymbolicLink(),
+		).toBe(true);
+	});
+
+	test("uses a custom version root and rejects an external public leaf", async () => {
+		const directory = await makeTemporaryDirectory();
+		const input = await createInput(directory);
+		const versionRoot = join(directory, "versions");
+		await publishPlans({
+			generatedLibraryRoot: join(directory, "generated"),
+			stagingRoot: join(directory, "staging"),
+			versionRoot,
+			inputs: [input],
+		});
+		const leaf = join(directory, "generated", "Artist", "Album");
+		expect(
+			resolve(dirname(leaf), await readlink(leaf)).startsWith(
+				versionRoot,
+			),
+		).toBe(true);
+		await rm(leaf);
+		await symlink("/tmp", leaf);
+		await expect(publish(directory, [input])).rejects.toThrow(
+			"Unmanaged generated-library entry",
+		);
 	});
 
 	test("publishes local artwork as an absolute symlink", async () => {

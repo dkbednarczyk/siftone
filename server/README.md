@@ -1,6 +1,6 @@
 # `@siftone/server`
 
-Linux/POSIX music-management server. It reads one configured root, turns valid FLAC/MP3 release folders into a managed Subsonic-compatible symlink library, records ownership in SQLite, reconciles source changes through a watcher, and exposes a health endpoint. The management API remains planned.
+Linux/POSIX music-management server. It reads one configured root, turns valid FLAC/MP3 release folders into a managed Subsonic-compatible symlink library, records ownership in SQLite, reconciles periodic source snapshots, and exposes health and local reconciliation-testing endpoints.
 
 Read the [architecture guide](./docs/architecture.md) to understand the server's ownership boundaries, lifecycle, and safe extension points. The current HTTP transport uses [Elysia](https://elysiajs.com/) and Bun-native APIs. Route handlers stay thin; scanning, SQLite, filesystem, and import services remain framework-independent.
 
@@ -15,7 +15,18 @@ bun run --cwd server scan:dry-run
 bun run --cwd server build:linux-x64
 ```
 
-The server binds only to `127.0.0.1`. Its TOML `server.port` is optional and defaults to `3000`. `GET /api/v1/health` is the current unauthenticated health endpoint. For a real Subsonic-client integration server, use the [Gonic test-server guide](./GONIC.md).
+## Development prerequisites
+
+The standard server test suite creates real, tagged audio fixtures. Install
+`ffmpeg`, `metaflac` (from the FLAC package), and `eyeD3` before running
+`bun run --cwd server test`. `bun run --cwd server check` also requires
+`ShellCheck` for the Gonic helper script.
+
+The optional Gonic smoke-test helper additionally requires `bash`, `curl`,
+`jq`, `sqlite3`, `ss` (from `iproute2`), and a separately installed `gonic`
+binary. See [`GONIC.md`](./GONIC.md) for its setup and commands.
+
+The server binds only to `127.0.0.1`. Its TOML `server.port` is optional and defaults to `3000`. `GET /api/v1/health`, `GET /api/v1/reconciliation/status`, and the temporary unauthenticated testing endpoint `POST /api/v1/reconciliation/rescan` are local-only. The POST endpoint accepts no paths or filters and returns `202` with scheduler status. For a real Subsonic-client integration server, use the [Gonic test-server guide](./GONIC.md).
 
 ## Boot configuration
 
@@ -48,6 +59,10 @@ bun run --cwd server state:restore /path/to/imports.sqlite
 ```
 
 ```toml
+[server]
+# Optional; defaults to 300 seconds.
+reconciliation_interval_seconds = 300
+
 [paths]
 watch_root = "/srv/downloads"
 generated_library_root = "/srv/music"
@@ -61,7 +76,8 @@ Only the source **watch root** and symlink destination **generated library
 root** are required. `musicbrainz.contact` is optional and is only checked as
 a string. Without it, MusicBrainz artwork lookup is disabled. `server.port` is
 optional and defaults to `3000`; when specified it must be an integer from `1`
-through `65535`.
+through `65535`. `server.reconciliation_interval_seconds` defaults to `300` and
+controls the periodic complete source snapshot cadence.
 
 The configuration defaults to `config.toml` in the current working directory.
 Managed data defaults under `~/.siftone`:
@@ -74,10 +90,12 @@ config.toml                    configuration file
 ```
 
 Optional TOML overrides are available for `server.port`, `paths.cache_root`,
-`paths.state_root`, and `paths.backup_root`. `paths.staging_root` may also be
-overridden; by default it is a `.siftone-staging` sibling of the generated
-library root because atomic publication requires it to share the library
-filesystem.
+`paths.state_root`, and `paths.backup_root`. `paths.staging_root` and
+`paths.version_root` may also be overridden; both default to hidden siblings of
+the generated library root and must share its filesystem. `[publication]`
+`version_retention_hours` defaults to 24. A Subsonic server must be able to
+resolve the sibling version root with its relative relationship to the library
+root.
 
 To test the MusicBrainz client and its Cover Art Archive support, configure
 `musicbrainz.contact` and run:
@@ -119,20 +137,21 @@ rejects equal, parent/child, or otherwise overlapping roots.
   degraded while startup continues with opening the SQLite ownership/state
   database, creating a verified daily backup, recovering interrupted operations,
   preflighting every plan, and reconciling it against generated output. The
-  watcher then coalesces source changes by immediate watch-root child and performs
-  targeted reconciliation; lost events or incomplete scans degrade health and
-  require a later full reconciliation.
+  a single-flight scheduler then performs complete periodic source snapshots.
+  A new or changed snapshot must remain identical for one configured interval
+  before reconciliation; failed or incomplete snapshots degrade health, and a
+  later confirmed complete reconciliation restores it.
 - Reconciliation rejects invalid or unmanaged generated entries, stages complete
-  albums on the generated-library filesystem, and atomically publishes each album
-  directory. It records add, replace, repair, and delayed-delete operations in
-  SQLite so a rerun can resume after a failure without rolling back earlier
-  successful albums.
+  albums into immutable version directories, and atomically swaps the public
+  album-leaf symlink. It records add, replace, repair, and delayed-delete
+  operations in SQLite so a rerun can resume after a failure without rolling back
+  earlier successful albums.
 
 ## Implemented import pipeline
 
 ```text
 watch-root child
-  → full scan or quiet-period watcher snapshot
+  → startup or periodic complete source snapshot
   → FLAC/MP3 discovery and tag validation
   → exact-ALBUM logical release split and collision arbitration
   → SQLite operation journal + same-filesystem staging directory
@@ -168,10 +187,15 @@ sanitized while preserving Unicode. Competing non-equivalent destinations requir
 review; an otherwise identical pure-MP3 contender is automatically suppressed when
 an equivalent pure-FLAC contender exists.
 
-Each generated album contains only audio symlinks and an optional local-artwork
-symlink, named `cover.jpg` or `cover.png`. Imports stage on the same filesystem
-and publish by atomic rename. Siftone never overwrites, adopts, tracks, or deletes
-unmanaged entries in a forced non-empty root.
+Each generated album version contains only audio symlinks and an optional
+local-artwork symlink, named `cover.jpg` or `cover.png`. The public
+`Artist/Album` leaf is an owned relative symlink to that immutable version.
+Imports stage and version on the same filesystem, then publish replacements by
+an atomic symlink rename; old versions remain for the configured retention
+window. Siftone never overwrites, adopts, tracks, or deletes unmanaged entries
+in a forced non-empty root. This is a breaking layout change: existing
+Siftone-managed real album directories require a rebuilt generated library and
+state database; Siftone never migrates them through a visible replacement gap.
 
 Sources are immutable: never write, edit, move, rename, delete, chmod/chown, or
 create markers in them. Only the server writes generated-library, cache, staging,
@@ -181,10 +205,10 @@ reported for review.
 
 ## Source lifecycle
 
-- Source changes wait for a quiet period, revalidate, and reconcile their
-  immediate watch-root child. Conflicts and incomplete scans suppress destructive
-  changes and mark full reconciliation required.
-- A tracked source absent from a complete scan is immediately removed through a
+- A single-flight timer scans the complete source tree at the configured cadence.
+  It never creates recursive filesystem watches; timer ticks and manual rescan
+  requests coalesce rather than overlapping.
+- A tracked source absent from two consecutive complete scans is removed through a
   journaled delete operation. Permission/I/O errors and incomplete scans do not
   authorize that deletion.
 - Folder path/name is candidate identity. A rename/move is a missing old candidate
@@ -221,12 +245,11 @@ M3U, and rip logs are never published or trusted as metadata.
   old/new destination path. Its filesystem checkpoint is only a recovery hint:
   restart inspects staging, destination, and tombstone state before resuming
   idempotently.
-- `chokidar` is the filesystem-watching dependency. Node/Bun watchers do not offer
-  a reliable portable recursive watcher with the operational error surface needed
-  here; chokidar provides that established layer. Events merely coalesce immediate
-  source containers for targeted reconciliation. A watcher error marks full
-  reconciliation required; startup performs that reconciliation after operation
-  recovery because the source may have changed while Siftone was offline.
+- Siftone does not recursively watch source directories. Recursive inotify watches
+  consume one watch per directory and can exceed Linux watch limits. Instead, a
+  bounded complete directory traversal is reconciled on a timer; this deliberately
+  trades notification latency for predictable resource use. Root-only listings were
+  rejected because supported candidate directories may be modified in place.
 - Keep boot-critical paths/network settings in a server-owned TOML file. Future
   CLI-editable runtime settings will live in SQLite. Daily backups are
   self-contained snapshots named by UTC date.

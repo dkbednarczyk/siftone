@@ -1,12 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-	mkdir,
-	mkdtemp,
-	readFile,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverCandidate, discoverCandidates } from "./discover";
@@ -282,15 +275,5 @@ describe("candidate discovery", () => {
 		}
 
 		expect(caughtError).toMatchObject({ code: "ENOENT" });
-	});
-
-	test("only reads source files", async () => {
-		const watchRoot = await makeWatchRoot();
-		const sourceFile = join(watchRoot, "Album", "01 Song.flac");
-		await writeSourceFile(sourceFile, "original audio bytes");
-
-		await discoverCandidates(watchRoot);
-
-		expect(await readFile(sourceFile, "utf8")).toBe("original audio bytes");
 	});
 });

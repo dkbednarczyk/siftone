@@ -8,6 +8,8 @@ export type Existing = {
 	import_id: string;
 	release_id: string;
 	destination_path: string | null;
+	version_id: string | null;
+	version_path: string | null;
 	manifest_hash: string;
 	container_availability: "present" | "missing" | "inaccessible";
 	release_availability: "present" | "missing" | "inaccessible";
@@ -20,10 +22,11 @@ export function existingFor(
 ): Existing | null {
 	return state.database
 		.query<Existing, [string, string]>(`
-		SELECT i.id AS import_id, sr.id AS release_id, pd.destination_path, i.manifest_hash, sc.availability AS container_availability, sr.availability AS release_availability
+		SELECT i.id AS import_id, sr.id AS release_id, pd.destination_path, pd.version_id, av.version_path, i.manifest_hash, sc.availability AS container_availability, sr.availability AS release_availability
 		FROM source_releases sr JOIN source_containers sc ON sc.id = sr.container_id
 		LEFT JOIN imports i ON i.source_release_id = sr.id
 		LEFT JOIN published_destinations pd ON pd.import_id = i.id
+		LEFT JOIN album_versions av ON av.id = pd.version_id
 		WHERE sc.root_path = ? AND sr.logical_release_key = ?
 	`)
 		.get(containerPath, logicalKey);
@@ -57,6 +60,7 @@ export function createOperation(
 	existing: Existing | null,
 	desired: Desired | undefined,
 	stagingRoot: string,
+	versionRoot: string,
 	kind: OperationRow["kind"],
 	oldDestination: string | null,
 ): OperationRow {
@@ -77,6 +81,9 @@ export function createOperation(
 	}
 
 	const timestamp = nowNs();
+	const versionId = kind === "delete" ? null : randomUUID();
+	const versionPath =
+		versionId === null ? null : join(versionRoot, `operation-${id}`);
 	immediate(state, () => {
 		if (existing === null) {
 			if (newDesired === undefined) {
@@ -139,8 +146,15 @@ export function createOperation(
 			insertOrUpdateSourceFiles(state, releaseId, desired.entries);
 		}
 
+		if (versionId !== null && versionPath !== null) {
+			state.database.run(
+				"INSERT INTO album_versions (id, import_id, origin_operation_id, version_path, state, published_at_ns, retired_at_ns) VALUES (?, ?, ?, ?, 'pending', NULL, NULL)",
+				[versionId, importId, id, versionPath],
+			);
+		}
+
 		state.database.run(
-			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, NULL, ?, ?)",
+			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, version_id, version_path, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, ?, ?)",
 			[
 				id,
 				importId,
@@ -148,6 +162,8 @@ export function createOperation(
 				kind,
 				target,
 				join(stagingRoot, `operation-${id}`),
+				versionId,
+				versionPath,
 				timestamp,
 				timestamp,
 			],
@@ -189,5 +205,7 @@ export function createOperation(
 		phase: "planned",
 		target_destination_path: target,
 		staging_path: join(stagingRoot, `operation-${id}`),
+		version_id: versionId,
+		version_path: versionPath,
 	};
 }

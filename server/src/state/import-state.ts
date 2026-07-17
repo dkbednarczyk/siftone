@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { canonicalAbsolutePath, isPathBelowRoot } from "./canonical-path";
+import { bigintRow } from "./reconcile/database";
 import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 
 export { DATABASE_FILE } from "./schema";
@@ -11,8 +12,8 @@ export { DATABASE_FILE } from "./schema";
 export type ImportOperationPhase =
 	| "planned"
 	| "staged"
-	| "tombstoned"
-	| "published"
+	| "versioned"
+	| "swapped"
 	| "attention_required";
 
 export type ImportState = Readonly<{
@@ -24,7 +25,22 @@ export type ImportState = Readonly<{
 		inputs: readonly PublicationInput[],
 	): Promise<void>;
 	markReconciliationRequired(error?: string): void;
+	resetSourceObservationWindow(): void;
+	observeSourceManifest(
+		options: Readonly<{
+			watchRoot: string;
+			manifestHash: string;
+			minimumAgeMs: number;
+		}>,
+	): boolean;
 }>;
+
+const SOURCE_OBSERVATION_QUERY =
+	"SELECT confirmed_manifest_hash, pending_manifest_hash, pending_since_ns FROM source_observations WHERE root_path = ?";
+const UPSERT_CONFIRMED_SOURCE_OBSERVATION =
+	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns, updated_at_ns) VALUES (?, ?, NULL, NULL, ?) ON CONFLICT(root_path) DO UPDATE SET confirmed_manifest_hash = excluded.confirmed_manifest_hash, pending_manifest_hash = NULL, pending_since_ns = NULL, updated_at_ns = excluded.updated_at_ns";
+const UPSERT_PENDING_SOURCE_OBSERVATION =
+	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns, updated_at_ns) VALUES (?, NULL, ?, ?, ?) ON CONFLICT(root_path) DO UPDATE SET pending_manifest_hash = excluded.pending_manifest_hash, pending_since_ns = excluded.pending_since_ns, updated_at_ns = excluded.updated_at_ns";
 
 export class ImportStateError extends Error {
 	constructor(message: string) {
@@ -124,24 +140,40 @@ function openAndValidateSchema(path: string): Database {
 }
 
 async function isEmptyDirectory(path: string): Promise<boolean> {
-	return (await readdir(path)).length === 0;
+	try {
+		return (await readdir(path)).every((entry) => entry === ".siftone");
+	} catch (error) {
+		if (
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			error.code === "ENOENT"
+		) {
+			return true;
+		}
+
+		throw error;
+	}
 }
 
 /** Opens the destructive library-state database. SQLite itself serializes writers. */
 export async function openImportState({
 	stateRoot,
 	generatedLibraryRoot,
+	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
 }: Readonly<{
 	stateRoot: string;
 	generatedLibraryRoot: string;
+	versionRoot?: string;
 }>): Promise<ImportState> {
 	const databasePath = join(stateRoot, DATABASE_FILE);
 	if (
 		!existsSync(databasePath) &&
-		!(await isEmptyDirectory(generatedLibraryRoot))
+		(!(await isEmptyDirectory(generatedLibraryRoot)) ||
+			!(await isEmptyDirectory(versionRoot)))
 	) {
 		throw new ImportStateError(
-			"Generated-library root is non-empty but library state is absent; refusing to adopt output",
+			"Generated-library or version root is non-empty but library state is absent; refusing to adopt output",
 		);
 	}
 
@@ -155,6 +187,46 @@ export async function openImportState({
 				"UPDATE reconciliation_state SET required = 1, last_error = ?, updated_at_ns = ? WHERE id = 1",
 				[error ?? null, BigInt(Date.now()) * 1_000_000n],
 			);
+		},
+		resetSourceObservationWindow: () => {
+			database.run(
+				"UPDATE source_observations SET pending_manifest_hash = NULL, pending_since_ns = NULL, updated_at_ns = ?",
+				[BigInt(Date.now()) * 1_000_000n],
+			);
+		},
+		observeSourceManifest: ({ watchRoot, manifestHash, minimumAgeMs }) => {
+			const now = BigInt(Date.now()) * 1_000_000n;
+			const existing = bigintRow<
+				{
+					confirmed_manifest_hash: string | null;
+					pending_manifest_hash: string | null;
+					pending_since_ns: bigint | null;
+				},
+				[string]
+			>(database.query(SOURCE_OBSERVATION_QUERY), watchRoot);
+			const minimumAgeNs = BigInt(minimumAgeMs) * 1_000_000n;
+			const confirmed =
+				existing?.confirmed_manifest_hash === manifestHash ||
+				(existing?.pending_manifest_hash === manifestHash &&
+					existing.pending_since_ns !== null &&
+					now - existing.pending_since_ns >= minimumAgeNs);
+
+			if (confirmed) {
+				database.run(UPSERT_CONFIRMED_SOURCE_OBSERVATION, [
+					watchRoot,
+					manifestHash,
+					now,
+				]);
+			} else if (existing?.pending_manifest_hash !== manifestHash) {
+				database.run(UPSERT_PENDING_SOURCE_OBSERVATION, [
+					watchRoot,
+					manifestHash,
+					now,
+					now,
+				]);
+			}
+
+			return confirmed;
 		},
 		assertKnownExistingDestinations: async (inputs) => {
 			for (const input of inputs) {

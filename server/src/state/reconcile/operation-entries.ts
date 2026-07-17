@@ -104,6 +104,7 @@ type CurrentImport = Readonly<{
 	root_path: string;
 	logical_release_key: string;
 	destination_path: string;
+	release_availability: "present" | "missing" | "inaccessible";
 }>;
 
 export function currentImports(
@@ -113,7 +114,7 @@ export function currentImports(
 	if (observed === undefined) {
 		return state.database
 			.query<CurrentImport, []>(`
-				SELECT i.id AS import_id, sr.id AS release_id, sc.root_path, sr.logical_release_key, pd.destination_path
+				SELECT i.id AS import_id, sr.id AS release_id, sc.root_path, sr.logical_release_key, pd.destination_path, sr.availability AS release_availability
 				FROM imports i
 				JOIN source_releases sr ON sr.id = i.source_release_id
 				JOIN source_containers sc ON sc.id = sr.container_id
@@ -124,7 +125,7 @@ export function currentImports(
 
 	return state.database
 		.query<CurrentImport, [string]>(`
-			SELECT i.id AS import_id, sr.id AS release_id, sc.root_path, sr.logical_release_key, pd.destination_path
+			SELECT i.id AS import_id, sr.id AS release_id, sc.root_path, sr.logical_release_key, pd.destination_path, sr.availability AS release_availability
 			FROM json_each(?) observed
 			JOIN source_containers sc ON sc.root_path = observed.value
 			JOIN source_releases sr ON sr.container_id = sc.id

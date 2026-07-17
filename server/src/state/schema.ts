@@ -57,6 +57,17 @@ export const SCHEMA_SQL = `
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork'))
 	) STRICT, WITHOUT ROWID;
 	CREATE INDEX source_files_release_idx ON source_files(source_release_id);
+	CREATE TABLE source_observations (
+		root_path TEXT PRIMARY KEY COLLATE BINARY CHECK (${absolutePathCheck("root_path")} ),
+		confirmed_manifest_hash TEXT CHECK (confirmed_manifest_hash IS NULL OR length(confirmed_manifest_hash) = 64),
+		pending_manifest_hash TEXT CHECK (pending_manifest_hash IS NULL OR length(pending_manifest_hash) = 64),
+		pending_since_ns INTEGER,
+		outcome TEXT NOT NULL DEFAULT 'present' CHECK (outcome IN ('present', 'missing', 'inaccessible', 'unsupported')),
+		warning TEXT,
+		missing_since_ns INTEGER,
+		updated_at_ns INTEGER NOT NULL,
+		CHECK ((pending_manifest_hash IS NULL) = (pending_since_ns IS NULL))
+	) STRICT, WITHOUT ROWID;
 	CREATE TABLE imports (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		source_release_id TEXT NOT NULL UNIQUE REFERENCES source_releases(id) ON DELETE CASCADE,
@@ -89,9 +100,21 @@ export const SCHEMA_SQL = `
 		CHECK ((status = 'selected' AND cache_sha256 IS NOT NULL) OR (status <> 'selected' AND cache_sha256 IS NULL))
 	) STRICT, WITHOUT ROWID;
 	CREATE INDEX automatic_artwork_cache_sha_idx ON automatic_artwork(cache_sha256) WHERE cache_sha256 IS NOT NULL;
+	CREATE TABLE album_versions (
+		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
+		import_id TEXT REFERENCES imports(id) ON DELETE SET NULL,
+		origin_operation_id TEXT NOT NULL UNIQUE CHECK (${UUID_CHECK}),
+		version_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${absolutePathCheck("version_path")}),
+		state TEXT NOT NULL CHECK (state IN ('pending', 'current', 'retired')),
+		published_at_ns INTEGER,
+		retired_at_ns INTEGER,
+		CHECK ((state = 'pending' AND published_at_ns IS NULL AND retired_at_ns IS NULL) OR (state = 'current' AND published_at_ns IS NOT NULL AND retired_at_ns IS NULL) OR (state = 'retired' AND published_at_ns IS NOT NULL AND retired_at_ns IS NOT NULL))
+	) STRICT;
+	CREATE INDEX album_versions_retired_idx ON album_versions(retired_at_ns) WHERE state = 'retired';
 	CREATE TABLE published_destinations (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT NOT NULL UNIQUE REFERENCES imports(id) ON DELETE CASCADE,
+		version_id TEXT UNIQUE REFERENCES album_versions(id),
 		destination_path TEXT NOT NULL COLLATE BINARY UNIQUE CHECK (${absolutePathCheck("destination_path")}),
 		published_at_ns INTEGER NOT NULL
 	) STRICT;
@@ -113,9 +136,11 @@ export const SCHEMA_SQL = `
 		import_id TEXT NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
 		source_release_id TEXT NOT NULL REFERENCES source_releases(id) ON DELETE CASCADE,
 		kind TEXT NOT NULL CHECK (kind IN ('add', 'replace', 'delete', 'repair')),
-		phase TEXT NOT NULL CHECK (phase IN ('planned', 'staged', 'tombstoned', 'published', 'attention_required')),
+		phase TEXT NOT NULL CHECK (phase IN ('planned', 'staged', 'versioned', 'swapped', 'attention_required')),
 		target_destination_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("target_destination_path")}),
 		staging_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("staging_path")}),
+		version_id TEXT REFERENCES album_versions(id),
+		version_path TEXT COLLATE BINARY CHECK (version_path IS NULL OR ${absolutePathCheck("version_path")}),
 		error_message TEXT,
 		created_at_ns INTEGER NOT NULL,
 		updated_at_ns INTEGER NOT NULL,

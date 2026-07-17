@@ -1,0 +1,27 @@
+import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { observeSource } from "./source-observer";
+
+describe("source observer", () => {
+	test("changes its manifest when nested supported media changes", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-observer-"));
+		try {
+			const nested = join(root, "Album", "Disc 1");
+			await mkdir(nested, { recursive: true });
+			await writeFile(join(nested, "01.flac"), "first");
+			const first = await observeSource(root);
+			await writeFile(join(nested, "01.flac"), "replacement audio");
+			const second = await observeSource(root);
+
+			expect(first.containers[0].outcome).toBe("present");
+			expect(second.containers[0].outcome).toBe("present");
+			expect(second.containers[0].manifestHash).not.toBe(
+				first.containers[0].manifestHash,
+			);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});

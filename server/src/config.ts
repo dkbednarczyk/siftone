@@ -1,13 +1,6 @@
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import {
-	dirname,
-	isAbsolute,
-	join,
-	normalize,
-	relative,
-	resolve,
-} from "node:path";
+import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
 
 export type ServerPaths = Readonly<{
@@ -15,6 +8,7 @@ export type ServerPaths = Readonly<{
 	generatedLibraryRoot: string;
 	cacheRoot: string;
 	stagingRoot: string;
+	versionRoot: string;
 	stateRoot: string;
 	backupRoot: string;
 }>;
@@ -26,7 +20,9 @@ export type MusicBrainzConfig = Readonly<{
 export type ServerConfig = Readonly<{
 	configPath: string;
 	port: number;
+	reconciliationIntervalSeconds: number;
 	paths: ServerPaths;
+	versionRetentionHours: number;
 	musicBrainz: MusicBrainzConfig;
 }>;
 
@@ -44,12 +40,14 @@ export class ConfigError extends Error {
 }
 
 const DEFAULT_PORT = 3000;
+const DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 300;
 
 type PathField =
 	| "watch_root"
 	| "generated_library_root"
 	| "cache_root"
 	| "staging_root"
+	| "version_root"
 	| "state_root"
 	| "backup_root";
 
@@ -57,6 +55,7 @@ const TomlConfigSchema = z.strictObject({
 	server: z
 		.strictObject({
 			port: z.number().int().min(1).max(65_535).optional(),
+			reconciliation_interval_seconds: z.number().int().min(1).optional(),
 		})
 		.optional(),
 	paths: z.strictObject({
@@ -64,9 +63,15 @@ const TomlConfigSchema = z.strictObject({
 		generated_library_root: z.string(),
 		cache_root: z.string().optional(),
 		staging_root: z.string().optional(),
+		version_root: z.string().optional(),
 		state_root: z.string().optional(),
 		backup_root: z.string().optional(),
 	}),
+	publication: z
+		.strictObject({
+			version_retention_hours: z.number().positive().finite().optional(),
+		})
+		.optional(),
 	musicbrainz: z
 		.strictObject({
 			contact: z.string().optional(),
@@ -156,6 +161,32 @@ function pathsOverlap(firstPath: string, secondPath: string): boolean {
 	);
 }
 
+function isAllowedInternalOverlap(
+	firstName: keyof ServerPaths,
+	firstPath: string,
+	secondName: keyof ServerPaths,
+	secondPath: string,
+): boolean {
+	return (
+		(firstName === "generatedLibraryRoot" &&
+			(secondName === "stagingRoot" || secondName === "versionRoot") &&
+			secondPath ===
+				join(
+					firstPath,
+					".siftone",
+					secondName === "stagingRoot" ? "staging" : "versions",
+				)) ||
+		(secondName === "generatedLibraryRoot" &&
+			(firstName === "stagingRoot" || firstName === "versionRoot") &&
+			firstPath ===
+				join(
+					secondPath,
+					".siftone",
+					firstName === "stagingRoot" ? "staging" : "versions",
+				))
+	);
+}
+
 function validateNoOverlaps(paths: ServerPaths): void {
 	const entries = Object.entries(paths) as [keyof ServerPaths, string][];
 
@@ -164,8 +195,14 @@ function validateNoOverlaps(paths: ServerPaths): void {
 			const [firstName, firstPath] = entries[first];
 			const [secondName, secondPath] = entries[second];
 			if (
-				pathsOverlap(firstPath, secondPath) ||
-				pathsOverlap(secondPath, firstPath)
+				!isAllowedInternalOverlap(
+					firstName,
+					firstPath,
+					secondName,
+					secondPath,
+				) &&
+				(pathsOverlap(firstPath, secondPath) ||
+					pathsOverlap(secondPath, firstPath))
 			) {
 				throw new ConfigError(
 					`paths.${firstName} and paths.${secondName} must not overlap`,
@@ -177,6 +214,13 @@ function validateNoOverlaps(paths: ServerPaths): void {
 
 function parsePort(config: TomlConfig): number {
 	return config.server?.port ?? DEFAULT_PORT;
+}
+
+function parseReconciliationIntervalSeconds(config: TomlConfig): number {
+	return (
+		config.server?.reconciliation_interval_seconds ??
+		DEFAULT_RECONCILIATION_INTERVAL_SECONDS
+	);
 }
 
 async function parsePaths(
@@ -197,10 +241,20 @@ async function parsePaths(
 		stagingRoot: validateAbsolutePath(
 			config.paths.staging_root ??
 				join(
-					dirname(config.paths.generated_library_root),
-					".siftone-staging",
+					config.paths.generated_library_root,
+					".siftone",
+					"staging",
 				),
 			"staging_root",
+		),
+		versionRoot: validateAbsolutePath(
+			config.paths.version_root ??
+				join(
+					config.paths.generated_library_root,
+					".siftone",
+					"versions",
+				),
+			"version_root",
 		),
 		stateRoot: validateAbsolutePath(
 			config.paths.state_root ?? join(dataRoot, "state"),
@@ -227,10 +281,20 @@ async function parsePaths(
 		configuredPaths.cacheRoot,
 		"cache_root",
 	);
+	if (generatedLibraryRoot === resolve(homeDirectory)) {
+		throw new ConfigError(
+			"paths.generated_library_root must not be the home directory because .siftone is global state",
+		);
+	}
+
 	const stagingRoot = await createAndResolveDirectory(
 		config.paths.staging_root ??
-			join(dirname(generatedLibraryRoot), ".siftone-staging"),
+			join(generatedLibraryRoot, ".siftone", "staging"),
 		"staging_root",
+	);
+	const versionRoot = await createAndResolveDirectory(
+		configuredPaths.versionRoot,
+		"version_root",
 	);
 	const stateRoot = await createAndResolveDirectory(
 		configuredPaths.stateRoot,
@@ -246,6 +310,7 @@ async function parsePaths(
 		generatedLibraryRoot,
 		cacheRoot,
 		stagingRoot,
+		versionRoot,
 		stateRoot,
 		backupRoot,
 	};
@@ -294,10 +359,15 @@ export async function loadServerConfig(
 	return {
 		configPath,
 		port: parsePort(result.data),
+		reconciliationIntervalSeconds: parseReconciliationIntervalSeconds(
+			result.data,
+		),
 		paths: await parsePaths(
 			result.data,
 			options.homeDirectory ?? homedir(),
 		),
+		versionRetentionHours:
+			result.data.publication?.version_retention_hours ?? 24,
 		musicBrainz: {
 			contact: result.data.musicbrainz?.contact,
 		},
