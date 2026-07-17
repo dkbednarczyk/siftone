@@ -84,11 +84,10 @@ export function frontCoverRequests(
 async function readBoundedBytes(
 	response: Response,
 ): Promise<Uint8Array | undefined> {
-	const declaredLength = response.headers.get("content-length");
+	const declaredLength = Number(response.headers.get("content-length"));
 	if (
-		declaredLength !== null &&
-		Number.isFinite(Number(declaredLength)) &&
-		Number(declaredLength) > MAX_COVER_BYTES
+		Number.isFinite(declaredLength) &&
+		declaredLength > MAX_COVER_BYTES
 	) {
 		return undefined;
 	}
