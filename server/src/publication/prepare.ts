@@ -15,6 +15,7 @@ import {
 	type AudioTags,
 	readAudioTags,
 } from "../metadata/tags";
+import { isDescendant } from "../path-utils";
 import { mapBounded } from "../util/util";
 import {
 	type PlannedSymlink,
@@ -369,12 +370,12 @@ function sourceContainerForIssue(
 	watchRoot: string,
 	path: string,
 ): string | undefined {
-	const inside = relative(watchRoot, path);
-	if (inside === "" || inside.startsWith("..") || inside.startsWith("/")) {
+	if (!isDescendant(watchRoot, path)) {
 		return undefined;
 	}
 
-	const [container] = inside.split("/");
+	const [container] = relative(watchRoot, path).split("/");
+
 	return container === undefined || container === ""
 		? undefined
 		: join(watchRoot, container);

@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadServerConfig, resolveConfigPath } from "./config";
+import { loadServerConfig } from "./config";
 
 const temporaryDirectories: string[] = [];
 const defaultRootParent = join(
@@ -73,33 +73,6 @@ afterEach(async () => {
 });
 
 describe("server configuration", () => {
-	test("resolves an explicit config path relative to the working directory", () => {
-		expect(
-			resolveConfigPath({
-				configPath: "settings/server.toml",
-				cwd: "/workspace",
-			}),
-		).toBe("/workspace/settings/server.toml");
-	});
-
-	test("uses config.toml in the working directory when --config is absent", async () => {
-		const directory = await makeTemporaryDirectory();
-		await writeConfig(directory);
-
-		expect(resolveConfigPath({ cwd: directory })).toBe(
-			join(directory, "config.toml"),
-		);
-		await expect(
-			loadServerConfig({
-				cwd: directory,
-				homeDirectory: defaultHomeDirectory,
-			}),
-		).resolves.toMatchObject({
-			configPath: join(directory, "config.toml"),
-			port: 3000,
-		});
-	});
-
 	test("allows an optional MusicBrainz contact", async () => {
 		const directory = await makeTemporaryDirectory();
 		const configPath = await writeConfig(directory);

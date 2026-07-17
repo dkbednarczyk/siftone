@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, dirname, extname, join, relative } from "node:path";
-import type { PublicationInput } from "../publication/publish";
-import { mapBounded } from "../util/util";
 import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathBelowRoot,
 	isPathWithinRoot,
-} from "./canonical-path";
-import type { Desired, SourceEntry } from "./reconcile/types";
+} from "../path-utils";
+import type { PublicationInput } from "../publication/publish";
+import { mapBounded } from "../util/util";
+import { entryPath } from "./entry-path";
+import type { Desired, Entry } from "./reconcile/types";
 
 const SOURCE_STAT_CONCURRENCY = 8;
 
@@ -19,17 +20,34 @@ function kindFor(path: string): "audio" | "artwork" {
 		: "artwork";
 }
 
-export function manifestHash(entries: readonly SourceEntry[]): string {
+export function manifestHash(entries: readonly Entry[]): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify(
-				entries.map((entry) => [
-					entry.relativeSourcePath,
-					entry.destinationName,
-					entry.size.toString(),
-					entry.mtimeNs.toString(),
-					entry.kind,
-				]),
+				entries
+					.toSorted((first, second) =>
+						first.destinationName.localeCompare(
+							second.destinationName,
+						),
+					)
+					.map((entry) =>
+						entry.origin === "source"
+							? [
+									entry.origin,
+									entry.relativeSourcePath,
+									entry.destinationName,
+									entry.size.toString(),
+									entry.mtimeNs.toString(),
+									entry.kind,
+								]
+							: [
+									entry.origin,
+									entry.cacheSha256,
+									entry.cacheRelativePath,
+									entry.destinationName,
+									entry.kind,
+								],
+					),
 			),
 		)
 		.digest("hex");
@@ -58,7 +76,7 @@ export async function desiredFor(
 		);
 	}
 
-	const entries: SourceEntry[] = await mapBounded(
+	const entries: Entry[] = await mapBounded(
 		input.entries,
 		async (entry) => {
 			const sourcePath = canonicalAbsolutePath(entry.sourcePath);
@@ -104,6 +122,23 @@ export async function desiredFor(
 		SOURCE_STAT_CONCURRENCY,
 	);
 
+	if (input.automaticArtwork?.status === "selected") {
+		const cacheObject = input.automaticArtwork.cacheObject;
+		if (cacheObject === undefined) {
+			throw new Error(
+				"Selected automatic artwork is missing its cache object",
+			);
+		}
+
+		entries.push({
+			origin: "cache",
+			cacheSha256: cacheObject.sha256,
+			cacheRelativePath: cacheObject.relativePath,
+			destinationName: "cover.jpg",
+			kind: "artwork",
+		});
+	}
+
 	entries.sort((a, b) => a.destinationName.localeCompare(b.destinationName));
 
 	if (
@@ -126,7 +161,8 @@ export async function desiredFor(
 
 export async function entriesMatch(
 	destination: string,
-	entries: readonly SourceEntry[],
+	entries: readonly Entry[],
+	cacheRoot: string,
 ): Promise<boolean> {
 	try {
 		const destinationStatus = await lstat(destination);
@@ -141,7 +177,10 @@ export async function entriesMatch(
 	}
 
 	const expected = new Map(
-		entries.map((entry) => [entry.destinationName, entry.sourcePath]),
+		entries.map((entry) => [
+			entry.destinationName,
+			entryPath(entry, cacheRoot),
+		]),
 	);
 
 	const output = await readdir(destination, { withFileTypes: true });
@@ -158,6 +197,15 @@ export async function entriesMatch(
 			target === undefined ||
 			(await readlink(join(destination, entry.name))) !== target
 		) {
+			return false;
+		}
+
+		try {
+			const targetStatus = await lstat(target);
+			if (!targetStatus.isFile() || targetStatus.isSymbolicLink()) {
+				return false;
+			}
+		} catch {
 			return false;
 		}
 	}

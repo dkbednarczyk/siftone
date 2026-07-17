@@ -2,10 +2,17 @@ import { resolve } from "node:path";
 import { Command, Option } from "commander";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
+import {
+	createAutomaticArtworkResolver,
+	resolvePublicationArtwork,
+} from "./musicbrainz/publication";
 import { preparePublication } from "./publication/prepare";
-import { restoreState } from "./restore";
-import { createDailyBackup } from "./state/backup";
-import { openImportState } from "./state/import-state";
+import { createDailyBackup, restoreBackup } from "./state/backup";
+import {
+	DATABASE_FILE,
+	type ImportState,
+	openImportState,
+} from "./state/import-state";
 import {
 	reconcileImports,
 	recoverInterruptedOperations,
@@ -38,19 +45,22 @@ function pathOption(flags: string, name: "config" | "backup"): Option {
 	);
 }
 
-/** Creates the sole root command for every Siftone server invocation. */
-export function createServerCommand(): Command {
-	return new Command()
-		.name("siftone")
-		.description("Manage and serve a Siftone music library")
-		.addOption(pathOption("--config <path>", "config"))
-		.addOption(pathOption("--backup <path>", "backup"));
-}
-
 async function runServer(config: ServerConfig): Promise<void> {
-	let state: Awaited<ReturnType<typeof openImportState>> | undefined;
+	const automaticArtworkResolver = createAutomaticArtworkResolver({
+		contact: config.musicBrainz.contact,
+		appName: "siftone",
+		appVersion: "0.0.0",
+	});
+
+	const automaticArtworkEnabled =
+		typeof config.musicBrainz.contact === "string" &&
+		config.musicBrainz.contact.trim().length > 0;
+
+	let state: ImportState | undefined;
 	let watcher: ReconciliationScheduler | undefined;
+
 	let ready = false;
+
 	const server = createApp(
 		() => (ready && state?.isDegraded() === false ? "ok" : "degraded"),
 		() => watcher,
@@ -66,7 +76,9 @@ async function runServer(config: ServerConfig): Promise<void> {
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
 			versionRoot: config.paths.versionRoot,
 		});
+
 		state = importState;
+
 		importState.resetSourceObservationWindow();
 		await createDailyBackup(importState, config.paths.backupRoot);
 
@@ -76,11 +88,13 @@ async function runServer(config: ServerConfig): Promise<void> {
 			state: importState,
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
 			stagingRoot: config.paths.stagingRoot,
+			cacheRoot: config.paths.cacheRoot,
 			versionRoot: config.paths.versionRoot,
 			versionRetentionHours: config.versionRetentionHours,
 		});
 
 		const startupObservation = await observeSource(config.paths.watchRoot);
+
 		if (!startupObservation.complete) {
 			importState.markReconciliationRequired(
 				`Incomplete startup source observation: ${startupObservation.issues[0] ?? "unknown issue"}`,
@@ -147,20 +161,36 @@ async function runServer(config: ServerConfig): Promise<void> {
 					);
 				}
 
+				const inputs = await resolvePublicationArtwork({
+					state: importState,
+					cacheRoot: config.paths.cacheRoot,
+					inputs: next.plans,
+					resolver: automaticArtworkResolver,
+					enabled: automaticArtworkEnabled,
+				});
+				for (const input of inputs) {
+					if (input.automaticArtwork !== undefined) {
+						console.info(
+							`Automatic artwork for ${input.albumArtist} — ${input.albumTitle}: ${input.automaticArtwork.status}`,
+						);
+					}
+				}
+
 				await reconcileImports({
 					state: importState,
 					generatedLibraryRoot: config.paths.generatedLibraryRoot,
 					stagingRoot: config.paths.stagingRoot,
+					cacheRoot: config.paths.cacheRoot,
 					versionRoot: config.paths.versionRoot,
 					versionRetentionHours: config.versionRetentionHours,
 					watchRoot: config.paths.watchRoot,
-					inputs: next.plans,
+					inputs,
 					complete: true,
 					incompleteSourceContainers: next.incompleteSourceContainers,
 				});
 
 				console.info(
-					`Took ${formatDuration(performance.now() - reconciliationStartedAt)} to reconcile ${next.plans.length} desired import(s) from periodic source scan.`,
+					`Took ${formatDuration(performance.now() - reconciliationStartedAt)} to reconcile ${inputs.length} desired import(s) from periodic source scan.`,
 				);
 			},
 			onFailure: (error) =>
@@ -168,6 +198,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					`Periodic source scan failed: ${error.message}`,
 				),
 		});
+
 		watcher = sourceWatcher;
 		ready = true;
 	} catch (error) {
@@ -177,11 +208,13 @@ async function runServer(config: ServerConfig): Promise<void> {
 
 		await server.stop();
 		state?.close();
+
 		throw error;
 	}
 
 	if (state === undefined || watcher === undefined) {
 		await server.stop();
+
 		throw new Error(
 			"Siftone server startup did not initialize its runtime",
 		);
@@ -209,16 +242,34 @@ async function runServer(config: ServerConfig): Promise<void> {
 	process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
+export function createServerCommand(): Command {
+	return new Command()
+		.name("siftone")
+		.description("Manage and serve a Siftone music library")
+		.addOption(pathOption("--config <path>", "config"))
+		.addOption(pathOption("--backup <path>", "backup"));
+}
+
 async function main(): Promise<void> {
 	const command = createServerCommand();
+
 	command.parse();
 
 	const options = command.opts<ServerCommandOptions>();
 	const config = await loadServerConfig({ configPath: options.config });
+
 	console.info(`Loaded configuration from ${config.configPath}`);
 
 	if (options.backup !== undefined) {
-		await restoreState(config, resolve(process.cwd(), options.backup));
+		await restoreBackup({
+			backupPath: config.paths.backupRoot,
+			databasePath: resolve(config.paths.stateRoot, DATABASE_FILE),
+		});
+
+		console.info(
+			"Restored verified SQLite library state. Start Siftone normally.",
+		);
+
 		return;
 	}
 

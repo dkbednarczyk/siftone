@@ -1,6 +1,12 @@
 import { lstat, mkdir, readlink, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { canonicalAbsolutePath, isPathBelowRoot } from "./canonical-path";
+import {
+	canonicalAbsolutePath,
+	isMissingError,
+	isPathBelowRoot,
+	isRealDirectory,
+	isSameOrDescendant,
+} from "../path-utils";
 
 export class InvalidOperationState extends Error {}
 
@@ -9,12 +15,7 @@ export async function isMissing(path: string): Promise<boolean> {
 		await lstat(path);
 		return false;
 	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error !== null &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
+		if (isMissingError(error)) {
 			return true;
 		}
 
@@ -28,9 +29,7 @@ export async function ensurePublicationRoots(
 	versionRoot: string,
 ): Promise<void> {
 	for (const root of [generatedLibraryRoot, stagingRoot, versionRoot]) {
-		const status = await lstat(root);
-
-		if (!status.isDirectory() || status.isSymbolicLink()) {
+		if (!(await isRealDirectory(root))) {
 			throw new InvalidOperationState(
 				`Managed root must be a real directory: ${root}`,
 			);
@@ -55,21 +54,16 @@ export async function ensureDestinationParent(
 	destination: string,
 ): Promise<void> {
 	const parent = dirname(destination);
-	const relativeParent = relative(generatedLibraryRoot, parent);
 
-	if (
-		relativeParent !== "" &&
-		(relativeParent.startsWith("..") || isAbsolute(relativeParent))
-	) {
+	if (!isSameOrDescendant(generatedLibraryRoot, parent)) {
 		throw new InvalidOperationState(
 			"Destination escapes generated-library root",
 		);
 	}
 
 	await mkdir(parent, { recursive: true });
-	const status = await lstat(parent);
 
-	if (!status.isDirectory() || status.isSymbolicLink()) {
+	if (!(await isRealDirectory(parent))) {
 		throw new InvalidOperationState(
 			`Destination parent is unsafe: ${parent}`,
 		);
@@ -151,8 +145,7 @@ export async function isOwnedPublicLeaf(
 			return false;
 		}
 
-		const versionStatus = await lstat(version);
-		return versionStatus.isDirectory() && !versionStatus.isSymbolicLink();
+		return isRealDirectory(version);
 	} catch {
 		return false;
 	}

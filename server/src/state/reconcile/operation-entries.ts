@@ -2,22 +2,41 @@ import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathWithinRoot,
-} from "../canonical-path";
+} from "../../path-utils";
 import type { ImportState } from "../import-state";
 import { bigintRows } from "./database";
-import type { SourceEntry } from "./types";
+import type { Entry } from "./types";
 
-type StoredEntry = {
-	destination_name: string;
-	source_path: string;
-	root_path: string;
-	size: bigint;
-	mtime_ns: bigint;
-	kind: "audio" | "artwork";
-};
+type StoredEntry =
+	| Readonly<{
+			origin: "source";
+			destination_name: string;
+			source_path: string;
+			root_path: string;
+			size: bigint;
+			mtime_ns: bigint;
+			kind: "audio" | "artwork";
+	  }>
+	| Readonly<{
+			origin: "cache";
+			destination_name: string;
+			cache_sha256: string;
+			relative_path: string;
+			kind: "artwork";
+	  }>;
 
-function storedEntriesToEntries(rows: readonly StoredEntry[]): SourceEntry[] {
+function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
 	return rows.map((row) => {
+		if (row.origin === "cache") {
+			return {
+				origin: "cache",
+				cacheSha256: row.cache_sha256,
+				cacheRelativePath: canonicalRelativePath(row.relative_path),
+				destinationName: row.destination_name,
+				kind: row.kind,
+			};
+		}
+
 		const sourcePath = canonicalAbsolutePath(row.source_path);
 		const rootPath = canonicalAbsolutePath(row.root_path);
 
@@ -49,15 +68,16 @@ function storedEntriesToEntries(rows: readonly StoredEntry[]): SourceEntry[] {
 export function operationEntries(
 	state: ImportState,
 	operationId: string,
-): SourceEntry[] {
+): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.kind
+		SELECT oe.origin, oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.kind, oe.cache_sha256, aco.relative_path
 		FROM operation_entries oe
-		JOIN source_files sf ON sf.source_path = oe.source_path
-		JOIN source_releases sr ON sr.id = sf.source_release_id
-		JOIN source_containers sc ON sc.id = sr.container_id
-		WHERE oe.operation_id = ? AND oe.origin = 'source' ORDER BY oe.destination_name
+		LEFT JOIN source_files sf ON oe.origin = 'source' AND sf.source_path = oe.source_path
+		LEFT JOIN source_releases sr ON sr.id = sf.source_release_id
+		LEFT JOIN source_containers sc ON sc.id = sr.container_id
+		LEFT JOIN artwork_cache_objects aco ON oe.origin = 'cache' AND aco.sha256 = oe.cache_sha256
+		WHERE oe.operation_id = ? ORDER BY oe.destination_name
 	`),
 		operationId,
 	);
@@ -81,16 +101,17 @@ export function priorDestination(
 export function destinationEntries(
 	state: ImportState,
 	importId: string,
-): SourceEntry[] {
+): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.kind
+		SELECT de.origin, de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.kind, de.cache_sha256, aco.relative_path
 		FROM destination_entries de
 		JOIN published_destinations pd ON pd.id = de.destination_id
-		JOIN source_files sf ON sf.source_path = de.source_path
-		JOIN source_releases sr ON sr.id = sf.source_release_id
-		JOIN source_containers sc ON sc.id = sr.container_id
-		WHERE pd.import_id = ? AND de.origin = 'source' ORDER BY de.destination_name
+		LEFT JOIN source_files sf ON de.origin = 'source' AND sf.source_path = de.source_path
+		LEFT JOIN source_releases sr ON sr.id = sf.source_release_id
+		LEFT JOIN source_containers sc ON sc.id = sr.container_id
+		LEFT JOIN artwork_cache_objects aco ON de.origin = 'cache' AND aco.sha256 = de.cache_sha256
+		WHERE pd.import_id = ? ORDER BY de.destination_name
 	`),
 		importId,
 	);

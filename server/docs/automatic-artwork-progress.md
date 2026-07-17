@@ -7,8 +7,8 @@ can distinguish completed work from approved but unimplemented scope.
 ## Status
 
 - Approved by user: 2026-07-16
-- Current phase: 4 — Thread `cacheRoot` through reconciliation, staging,
-  recovery, snapshots, and finalization next.
+- Current phase: 6 — Complete cache-object lifecycle management: sweeping,
+  local-art supersession, and damaged-cache repair next.
 - Phase 1 completed: source output is deleted immediately after a complete scan
   confirms the source release is absent; uncertain observations remain
   non-destructive.
@@ -138,15 +138,30 @@ can distinguish completed work from approved but unimplemented scope.
       source-only runtime compatibility, old-schema rejection, constraint/FK/
       integrity coverage, and cache-reference deletion tests. Focused state and
       reconciliation tests, full server tests (126), typecheck, Biome, frozen
-      install, Linux builds, isolated compiled-binary execution, and diff check passed.
-- [ ] Phase 4 — Thread `cacheRoot` through reconciliation, operation staging,
-      recovery, snapshots, and finalization; ensure cache entries never depend
-      on `source_files`.
-- [ ] Phase 5 — Resolve art after contender arbitration and before the single
-      complete reconciliation; carry results through `PublicationInput` and
-      persist them once source-release IDs exist.
-- [ ] Phase 6 — Add atomic object writes, reference-aware cleanup, startup/post-
-      commit sweeping, local-art supersession, and damaged-cache repair.
+      install, Linux builds, isolated compiled-binary execution, and diff
+      check passed.
+- [x] Phase 4 — Threaded `cacheRoot` through startup recovery and
+      reconciliation into origin-aware staging, snapshot validation, recovery,
+      and finalization. Cache-origin snapshots now join cache objects directly,
+      never `source_files`; cache paths are confined below `cacheRoot`, manifests
+      are order-normalized, and missing cache objects cannot be finalized from a
+      recovered stage. Focused tests, full server tests (144), typecheck,
+      Biome/ShellCheck, frozen install, both Linux builds, an isolated compiled
+      server smoke, and `git diff --check` passed.
+- [x] Phase 5 — Resolve automatic artwork only for artless winners after
+      contender arbitration; preserve winner order while resolving concurrently,
+      then reconcile the complete winner set once. Results now flow through
+      `PublicationInput`, selected JPEGs receive minimal content-addressed
+      atomic cache installation, and outcomes/cache metadata persist atomically
+      with source-release creation or update. Reused outcomes retain attempt
+      times; disabled, terminal, and backoff policies avoid unnecessary calls;
+      resolution and cache-install failures are nonblocking. Focused integration
+      and rollback coverage, full server tests (153), typecheck, Biome/ShellCheck,
+      frozen install, isolated Linux compiled builds, an isolated no-contact
+      compiled-server health smoke, and `git diff --check` passed.
+- [ ] Phase 6 — Complete reference-aware cleanup, startup/post-commit sweeping,
+      local-art supersession, and damaged-cache repair. The minimal atomic object
+      installation required by Phase 5 is already in place.
 - [ ] Phase 7 — Update documentation; run full validation and a live smoke test
       without exposing the configured MusicBrainz contact.
 

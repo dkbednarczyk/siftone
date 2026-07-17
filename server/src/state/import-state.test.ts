@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalAbsolutePath, canonicalRelativePath } from "./canonical-path";
 import { DATABASE_FILE, openImportState } from "./import-state";
 
 const roots: string[] = [];
@@ -162,35 +161,6 @@ describe("library state", () => {
 		expect(value?.mtime_ns).toBe(1234567890123456789n);
 		expect(state.isDegraded()).toBe(true);
 		state.close();
-	});
-	test("validates transient relative paths and persisted absolute paths", () => {
-		for (const path of [
-			"/x",
-			"./x",
-			"x/",
-			"a//b",
-			"a/./b",
-			"a/../b",
-			"a\\b",
-			".",
-			"",
-		])
-			expect(() => canonicalRelativePath(path)).toThrow();
-		expect(canonicalRelativePath("A/B.flac")).toBe("A/B.flac");
-		for (const path of [
-			"",
-			"relative",
-			"/trailing/",
-			"/double//slash",
-			"/dot/./segment",
-			"/parent/../segment",
-			"/back\\slash",
-		]) {
-			expect(() => canonicalAbsolutePath(path)).toThrow();
-		}
-		expect(canonicalAbsolutePath("/watch/Album/01.flac")).toBe(
-			"/watch/Album/01.flac",
-		);
 	});
 	test("rejects relative values in every persisted filesystem path column", async () => {
 		const paths = await fixture();

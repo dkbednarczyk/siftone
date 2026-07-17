@@ -17,11 +17,43 @@ import {
 	resolve,
 	sep,
 } from "node:path";
+import { isDescendant, isMissingError, isRealDirectory } from "../path-utils";
 import { mapBounded } from "../util/util";
 import type { PlannedSymlink } from "./plan";
 
 const ALBUM_STAGING_CONCURRENCY = 4;
 const ENTRY_IO_CONCURRENCY = 8;
+
+export type AutomaticArtworkStatus =
+	| "disabled"
+	| "no_match"
+	| "no_eligible_edition"
+	| "no_qualifying_cover"
+	| "edition_cap_reached"
+	| "transient_failure"
+	| "selected";
+
+export type ArtworkCacheObject = Readonly<{
+	sha256: string;
+	relativePath: string;
+	byteSize: number;
+	width: number;
+	height: number;
+}>;
+
+export type AutomaticArtwork = Readonly<{
+	metadataFingerprint: string;
+	resolverVersion: string;
+	status: AutomaticArtworkStatus;
+	cacheObject?: ArtworkCacheObject;
+	releaseGroupId?: string;
+	releaseId?: string;
+	sourceUrl?: string;
+	failureDetail?: string;
+	attemptCount: number;
+	attemptedAtNs: bigint;
+	nextAttemptAtNs?: bigint;
+}>;
 
 export type PublicationInput = Readonly<{
 	root: string;
@@ -29,6 +61,7 @@ export type PublicationInput = Readonly<{
 	albumArtist: string;
 	albumTitle: string;
 	entries: readonly PlannedSymlink[];
+	automaticArtwork?: AutomaticArtwork;
 }>;
 export type PublicationResult = Readonly<{
 	createdAlbums: number;
@@ -46,28 +79,11 @@ type AlbumPlan = Readonly<{
 }>;
 export class PublicationError extends Error {}
 
-function isMissing(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		error.code === "ENOENT"
-	);
-}
-function isWithin(parent: string, child: string): boolean {
-	const difference = relative(parent, child);
-	return (
-		difference !== "" &&
-		difference !== ".." &&
-		!difference.startsWith(`..${sep}`) &&
-		!isAbsolute(difference)
-	);
-}
 async function status(path: string) {
 	try {
 		return await lstat(path);
 	} catch (error) {
-		if (isMissing(error)) {
+		if (isMissingError(error)) {
 			return undefined;
 		}
 		throw error;
@@ -80,7 +96,7 @@ function plans(root: string, inputs: readonly PublicationInput[]): AlbumPlan[] {
 		const artistPath = dirname(path);
 		if (
 			input.entries.length === 0 ||
-			!isWithin(root, path) ||
+			!isDescendant(root, path) ||
 			relative(root, path).split(sep).length !== 2
 		) {
 			throw new PublicationError(`Unsafe album plan: ${input.root}`);
@@ -92,7 +108,7 @@ function plans(root: string, inputs: readonly PublicationInput[]): AlbumPlan[] {
 			if (
 				!isAbsolute(entry.sourcePath) ||
 				dirname(entry.destinationPath) !== path ||
-				!isWithin(path, entry.destinationPath)
+				!isDescendant(path, entry.destinationPath)
 			) {
 				throw new PublicationError(
 					`Unsafe planned destination: ${entry.destinationPath}`,
@@ -145,7 +161,7 @@ async function ownedLeaf(
 		}
 		const target = await readlink(leaf);
 		const version = resolve(dirname(leaf), target);
-		if (!isWithin(versionRoot, version)) {
+		if (!isDescendant(versionRoot, version)) {
 			return undefined;
 		}
 		const versionStatus = await lstat(version);
@@ -238,8 +254,7 @@ export async function publishPlans({
 		[stagingRoot, "Staging root"],
 		[versionRoot, "Version root"],
 	] as const) {
-		const root = await lstat(path);
-		if (!root.isDirectory() || root.isSymbolicLink()) {
+		if (!(await isRealDirectory(path))) {
 			throw new PublicationError(
 				`${description} is not a real directory`,
 			);
@@ -289,8 +304,7 @@ export async function publishPlans({
 			async ({ album, index }) => {
 				await beforePublishAlbum?.(album.path);
 				await mkdir(album.artistPath, { recursive: true });
-				const artist = await lstat(album.artistPath);
-				if (!artist.isDirectory() || artist.isSymbolicLink()) {
+				if (!(await isRealDirectory(album.artistPath))) {
 					throw new PublicationError(
 						`Generated artist path is unsafe: ${album.artistPath}`,
 					);

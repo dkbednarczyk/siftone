@@ -1,15 +1,19 @@
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { canonicalAbsolutePath, isPathWithinRoot } from "../../path-utils";
 import type { PublicationInput } from "../../publication/publish";
 import { mapBounded } from "../../util/util";
-import { canonicalAbsolutePath, isPathWithinRoot } from "../canonical-path";
 import type { ImportState } from "../import-state";
 import { ensurePublicationRoots, isOwnedPublicLeaf } from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
 import { executeOperation } from "./execute-operation";
 import { currentImports, destinationEntries } from "./operation-entries";
-import { createOperation, existingFor } from "./operation-store";
+import {
+	createOperation,
+	existingFor,
+	persistAutomaticArtwork,
+} from "./operation-store";
 import type { OperationRow } from "./types";
 import { collectRetiredVersions } from "./version-gc";
 
@@ -31,12 +35,14 @@ export async function recoverInterruptedOperations({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
+	cacheRoot,
 	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
 	versionRetentionHours = 24,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
+	cacheRoot: string;
 	versionRoot?: string;
 	versionRetentionHours?: number;
 }>): Promise<void> {
@@ -61,6 +67,7 @@ export async function recoverInterruptedOperations({
 				generatedLibraryRoot,
 				stagingRoot,
 				versionRoot,
+				cacheRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,
@@ -77,6 +84,7 @@ export async function reconcileImports({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
+	cacheRoot,
 	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
 	versionRetentionHours = 24,
 	watchRoot,
@@ -88,6 +96,7 @@ export async function reconcileImports({
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
+	cacheRoot: string;
 	versionRoot?: string;
 	versionRetentionHours?: number;
 	watchRoot: string;
@@ -177,6 +186,7 @@ export async function reconcileImports({
 			!(await entriesMatch(
 				existing.version_path,
 				destinationEntries(state, existing.import_id),
+				cacheRoot,
 			))
 		) {
 			scheduled.push(
@@ -204,7 +214,21 @@ export async function reconcileImports({
 					"UPDATE source_releases SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = ?",
 					[timestamp, existing.release_id],
 				);
+				persistAutomaticArtwork(
+					state,
+					existing.release_id,
+					item.input.automaticArtwork,
+					timestamp,
+				);
 			});
+		} else {
+			immediate(state, () =>
+				persistAutomaticArtwork(
+					state,
+					existing.release_id,
+					item.input.automaticArtwork,
+				),
+			);
 		}
 	}
 
@@ -282,6 +306,7 @@ export async function reconcileImports({
 				generatedLibraryRoot,
 				stagingRoot,
 				versionRoot,
+				cacheRoot,
 				operation,
 			),
 		OPERATION_CONCURRENCY,

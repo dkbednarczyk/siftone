@@ -1,6 +1,6 @@
 import { lstat, readdir, readlink, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { isPathBelowRoot } from "../canonical-path";
+import { isPathBelowRoot } from "../../path-utils";
 import type { ImportState } from "../import-state";
 import { bigintRows } from "./database";
 

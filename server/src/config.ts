@@ -1,7 +1,12 @@
-import { mkdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
+import {
+	createAndResolveDirectory,
+	isSameOrDescendant,
+	resolveExistingDirectory,
+	validateAbsolutePath,
+} from "./path-utils";
 
 export type ServerPaths = Readonly<{
 	watchRoot: string;
@@ -33,23 +38,14 @@ export type ConfigLoadOptions = Readonly<{
 }>;
 
 export class ConfigError extends Error {
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "ConfigError";
 	}
 }
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 300;
-
-type PathField =
-	| "watch_root"
-	| "generated_library_root"
-	| "cache_root"
-	| "staging_root"
-	| "version_root"
-	| "state_root"
-	| "backup_root";
 
 const TomlConfigSchema = z.strictObject({
 	server: z
@@ -81,6 +77,17 @@ const TomlConfigSchema = z.strictObject({
 
 type TomlConfig = z.infer<typeof TomlConfigSchema>;
 
+type PathField =
+	| "watch_root"
+	| "generated_library_root"
+	| "cache_root"
+	| "staging_root"
+	| "version_root"
+	| "state_root"
+	| "backup_root";
+
+const configError = (message: string): ConfigError => new ConfigError(message);
+
 export function resolveConfigPath({
 	configPath,
 	cwd = process.cwd(),
@@ -88,76 +95,65 @@ export function resolveConfigPath({
 	return resolve(cwd, configPath ?? "config.toml");
 }
 
-function validateAbsolutePath(value: string, field: PathField[0]): string {
-	if (value.trim() === "") {
-		throw new ConfigError(
-			`paths.${field} must be a non-empty absolute path`,
-		);
-	}
-
-	if (!isAbsolute(value)) {
-		throw new ConfigError(`paths.${field} must be an absolute path`);
-	}
-
-	return normalize(value);
-}
-
-async function resolveExistingDirectory(
+async function resolveConfigDirectory(
 	value: string,
-	field: PathField[0],
+	field: PathField,
 ): Promise<string> {
-	const path = validateAbsolutePath(value, field);
-
 	try {
-		const canonicalPath = await realpath(path);
-
-		if (!(await stat(canonicalPath)).isDirectory()) {
-			throw new ConfigError(`paths.${field} must be a directory`);
-		}
-
-		return canonicalPath;
+		return await resolveExistingDirectory(
+			value,
+			`paths.${field}`,
+			configError,
+		);
 	} catch (error) {
 		if (error instanceof ConfigError) {
 			throw error;
 		}
 
-		throw new ConfigError(
-			`Cannot resolve paths.${field} (${path}): ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
+		throw new ConfigError(`Cannot resolve paths.${field}`, {
+			cause: error,
+		});
 	}
 }
 
-async function createAndResolveDirectory(
+async function createConfigDirectory(
 	value: string,
-	field: PathField[0],
+	field: PathField,
 ): Promise<string> {
-	const path = validateAbsolutePath(value, field);
-
 	try {
-		await mkdir(path, { recursive: true });
-		const canonicalPath = await realpath(path);
-
-		if (!(await stat(canonicalPath)).isDirectory()) {
-			throw new ConfigError(`paths.${field} must be a directory`);
+		return await createAndResolveDirectory(
+			value,
+			`paths.${field}`,
+			configError,
+		);
+	} catch (error) {
+		if (error instanceof ConfigError) {
+			throw error;
 		}
 
-		return canonicalPath;
-	} catch (error) {
-		throw new ConfigError(
-			`Cannot create paths.${field} (${path}): ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
+		throw new ConfigError(`Cannot create paths.${field}`, { cause: error });
 	}
 }
 
-function pathsOverlap(firstPath: string, secondPath: string): boolean {
-	const difference = relative(firstPath, secondPath);
+const internalGeneratedDirectoryNames: Partial<
+	Record<keyof ServerPaths, string>
+> = {
+	stagingRoot: "staging",
+	versionRoot: "versions",
+};
+
+function isAllowedGeneratedChild(
+	parentName: keyof ServerPaths,
+	parentPath: string,
+	childName: keyof ServerPaths,
+	childPath: string,
+): boolean {
+	const directoryName = internalGeneratedDirectoryNames[childName];
+
 	return (
-		difference === "" ||
-		(difference !== ".." && !difference.startsWith("../"))
+		parentName === "generatedLibraryRoot" &&
+		directoryName !== undefined &&
+		childPath === join(parentPath, ".siftone", directoryName)
 	);
 }
 
@@ -168,22 +164,8 @@ function isAllowedInternalOverlap(
 	secondPath: string,
 ): boolean {
 	return (
-		(firstName === "generatedLibraryRoot" &&
-			(secondName === "stagingRoot" || secondName === "versionRoot") &&
-			secondPath ===
-				join(
-					firstPath,
-					".siftone",
-					secondName === "stagingRoot" ? "staging" : "versions",
-				)) ||
-		(secondName === "generatedLibraryRoot" &&
-			(firstName === "stagingRoot" || firstName === "versionRoot") &&
-			firstPath ===
-				join(
-					secondPath,
-					".siftone",
-					firstName === "stagingRoot" ? "staging" : "versions",
-				))
+		isAllowedGeneratedChild(firstName, firstPath, secondName, secondPath) ||
+		isAllowedGeneratedChild(secondName, secondPath, firstName, firstPath)
 	);
 }
 
@@ -194,6 +176,11 @@ function validateNoOverlaps(paths: ServerPaths): void {
 		for (let second = first + 1; second < entries.length; second += 1) {
 			const [firstName, firstPath] = entries[first];
 			const [secondName, secondPath] = entries[second];
+
+			const pathsOverlap =
+				isSameOrDescendant(firstPath, secondPath) ||
+				isSameOrDescendant(secondPath, firstPath);
+
 			if (
 				!isAllowedInternalOverlap(
 					firstName,
@@ -201,8 +188,7 @@ function validateNoOverlaps(paths: ServerPaths): void {
 					secondName,
 					secondPath,
 				) &&
-				(pathsOverlap(firstPath, secondPath) ||
-					pathsOverlap(secondPath, firstPath))
+				pathsOverlap
 			) {
 				throw new ConfigError(
 					`paths.${firstName} and paths.${secondName} must not overlap`,
@@ -212,31 +198,27 @@ function validateNoOverlaps(paths: ServerPaths): void {
 	}
 }
 
-function parsePort(config: TomlConfig): number {
-	return config.server?.port ?? DEFAULT_PORT;
-}
-
-function parseReconciliationIntervalSeconds(config: TomlConfig): number {
-	return (
-		config.server?.reconciliation_interval_seconds ??
-		DEFAULT_RECONCILIATION_INTERVAL_SECONDS
-	);
-}
-
 async function parsePaths(
 	config: TomlConfig,
 	homeDirectory: string,
 ): Promise<ServerPaths> {
 	const dataRoot = join(homeDirectory, ".siftone");
+
 	const configuredPaths: ServerPaths = {
-		watchRoot: validateAbsolutePath(config.paths.watch_root, "watch_root"),
+		watchRoot: validateAbsolutePath(
+			config.paths.watch_root,
+			"paths.watch_root",
+			configError,
+		),
 		generatedLibraryRoot: validateAbsolutePath(
 			config.paths.generated_library_root,
-			"generated_library_root",
+			"paths.generated_library_root",
+			configError,
 		),
 		cacheRoot: validateAbsolutePath(
 			config.paths.cache_root ?? join(dataRoot, "cache"),
-			"cache_root",
+			"paths.cache_root",
+			configError,
 		),
 		stagingRoot: validateAbsolutePath(
 			config.paths.staging_root ??
@@ -245,7 +227,8 @@ async function parsePaths(
 					".siftone",
 					"staging",
 				),
-			"staging_root",
+			"paths.staging_root",
+			configError,
 		),
 		versionRoot: validateAbsolutePath(
 			config.paths.version_root ??
@@ -254,53 +237,62 @@ async function parsePaths(
 					".siftone",
 					"versions",
 				),
-			"version_root",
+			"paths.version_root",
+			configError,
 		),
 		stateRoot: validateAbsolutePath(
 			config.paths.state_root ?? join(dataRoot, "state"),
-			"state_root",
+			"paths.state_root",
+			configError,
 		),
 		backupRoot: validateAbsolutePath(
 			config.paths.backup_root ?? join(dataRoot, "backups"),
-			"backup_root",
+			"paths.backup_root",
+			configError,
 		),
 	};
+
 	validateNoOverlaps(configuredPaths);
 
-	const watchRoot = await resolveExistingDirectory(
+	const watchRoot = await resolveConfigDirectory(
 		configuredPaths.watchRoot,
 		"watch_root",
 	);
 	validateNoOverlaps({ ...configuredPaths, watchRoot });
 
-	const generatedLibraryRoot = await createAndResolveDirectory(
+	const generatedLibraryRoot = await createConfigDirectory(
 		configuredPaths.generatedLibraryRoot,
 		"generated_library_root",
 	);
-	const cacheRoot = await createAndResolveDirectory(
+
+	const cacheRoot = await createConfigDirectory(
 		configuredPaths.cacheRoot,
 		"cache_root",
 	);
+
 	if (generatedLibraryRoot === resolve(homeDirectory)) {
 		throw new ConfigError(
 			"paths.generated_library_root must not be the home directory because .siftone is global state",
 		);
 	}
 
-	const stagingRoot = await createAndResolveDirectory(
+	const stagingRoot = await createConfigDirectory(
 		config.paths.staging_root ??
 			join(generatedLibraryRoot, ".siftone", "staging"),
 		"staging_root",
 	);
-	const versionRoot = await createAndResolveDirectory(
+
+	const versionRoot = await createConfigDirectory(
 		configuredPaths.versionRoot,
 		"version_root",
 	);
-	const stateRoot = await createAndResolveDirectory(
+
+	const stateRoot = await createConfigDirectory(
 		configuredPaths.stateRoot,
 		"state_root",
 	);
-	const backupRoot = await createAndResolveDirectory(
+
+	const backupRoot = await createConfigDirectory(
 		configuredPaths.backupRoot,
 		"backup_root",
 	);
@@ -314,7 +306,9 @@ async function parsePaths(
 		stateRoot,
 		backupRoot,
 	};
+
 	validateNoOverlaps(paths);
+
 	return paths;
 }
 
@@ -328,22 +322,19 @@ export async function loadServerConfig(
 	try {
 		contents = await Bun.file(configPath).text();
 	} catch (error) {
-		throw new ConfigError(
-			`Cannot read configuration file ${configPath}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
+		throw new ConfigError(`Cannot read configuration file ${configPath}`, {
+			cause: error,
+		});
 	}
 
 	let parsed: unknown;
+
 	try {
 		parsed = Bun.TOML.parse(contents);
 	} catch (error) {
-		throw new ConfigError(
-			`Invalid TOML in ${configPath}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
+		throw new ConfigError(`Invalid TOML in ${configPath}`, {
+			cause: error,
+		});
 	}
 
 	const result = TomlConfigSchema.safeParse(parsed);
@@ -351,17 +342,21 @@ export async function loadServerConfig(
 		const issues = result.error.issues
 			.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
 			.join("; ");
+
 		throw new ConfigError(
 			`Invalid configuration in ${configPath}: ${issues}`,
+			{
+				cause: result.error.issues,
+			},
 		);
 	}
 
 	return {
 		configPath,
-		port: parsePort(result.data),
-		reconciliationIntervalSeconds: parseReconciliationIntervalSeconds(
-			result.data,
-		),
+		port: result.data.server?.port ?? DEFAULT_PORT,
+		reconciliationIntervalSeconds:
+			result.data.server?.reconciliation_interval_seconds ??
+			DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
 		paths: await parsePaths(
 			result.data,
 			options.homeDirectory ?? homedir(),

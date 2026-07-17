@@ -11,11 +11,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { resolvePublicationArtwork } from "../../musicbrainz/publication";
 import type { PublicationInput } from "../../publication/publish";
 import { openImportState } from "../import-state";
-import { desiredFor } from "../publication-snapshot";
+import { desiredFor, manifestHash } from "../publication-snapshot";
 import { reconcileImports, recoverInterruptedOperations } from "./index";
+import { destinationEntries } from "./operation-entries";
 import { createOperation } from "./operation-store";
+import type { Desired } from "./types";
 import { collectRetiredVersions } from "./version-gc";
 
 const roots: string[] = [];
@@ -33,11 +36,13 @@ async function fixture() {
 	const sourceRoot = join(watchRoot, "Album");
 	const generated = join(root, "generated");
 	const staging = join(root, "staging");
+	const cache = join(root, "cache");
 	const stateRoot = join(root, "state");
 	await Promise.all([
 		mkdir(sourceRoot, { recursive: true }),
 		mkdir(generated),
 		mkdir(staging),
+		mkdir(cache),
 		mkdir(stateRoot),
 	]);
 	const source = join(sourceRoot, "01.flac");
@@ -55,10 +60,42 @@ async function fixture() {
 		sourceRoot,
 		generated,
 		staging,
+		cache,
 		stateRoot,
 		source,
 		destination,
 		input,
+	};
+}
+
+async function withCachedArtwork(
+	paths: Awaited<ReturnType<typeof fixture>>,
+	state: Awaited<ReturnType<typeof openImportState>>,
+	desired: Desired,
+): Promise<{ desired: Desired; path: string }> {
+	const cacheSha256 = "a".repeat(64);
+	const cacheRelativePath = `artwork/sha256/${cacheSha256.slice(0, 2)}/${cacheSha256}.jpg`;
+	const path = join(paths.cache, cacheRelativePath);
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, "cover");
+	state.database.run(
+		"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, 5, 500, 500, 'image/jpeg', 1)",
+		[cacheSha256, cacheRelativePath],
+	);
+	const entries = [
+		...desired.entries,
+		{
+			origin: "cache" as const,
+			cacheSha256,
+			cacheRelativePath,
+			destinationName: "cover.jpg",
+			kind: "artwork" as const,
+		},
+	];
+
+	return {
+		desired: { ...desired, entries, manifestHash: manifestHash(entries) },
+		path,
 	};
 }
 
@@ -94,6 +131,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: true,
@@ -124,6 +162,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: false,
@@ -150,6 +189,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: false,
@@ -180,6 +220,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: true,
@@ -191,6 +232,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: true,
@@ -214,6 +256,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: true,
@@ -222,6 +265,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [],
 			complete: true,
@@ -232,6 +276,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [],
 			complete: true,
@@ -277,6 +322,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input, secondInput],
 			complete: true,
@@ -293,6 +339,7 @@ describe("reconciliation", () => {
 			state,
 			generatedLibraryRoot: paths.generated,
 			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
 		});
 		expect(
 			state.database
@@ -314,6 +361,7 @@ describe("reconciliation", () => {
 				state,
 				generatedLibraryRoot: paths.generated,
 				stagingRoot: paths.staging,
+				cacheRoot: paths.cache,
 				watchRoot: paths.watchRoot,
 				inputs: [paths.input],
 				complete: true,
@@ -325,6 +373,7 @@ describe("reconciliation", () => {
 				state,
 				generatedLibraryRoot: paths.generated,
 				stagingRoot: paths.staging,
+				cacheRoot: paths.cache,
 				watchRoot: paths.watchRoot,
 				inputs: [paths.input],
 				complete: true,
@@ -426,6 +475,7 @@ describe("reconciliation", () => {
 				state,
 				generatedLibraryRoot: paths.generated,
 				stagingRoot: paths.staging,
+				cacheRoot: paths.cache,
 			});
 			expect((await lstat(paths.destination)).isSymbolicLink()).toBe(
 				true,
@@ -446,5 +496,311 @@ describe("reconciliation", () => {
 			).toBe("current");
 			state.close();
 		}
+	});
+
+	test("recovers and finalizes cache artwork without source-file rows", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const sourceDesired = await desiredFor(
+			paths.watchRoot,
+			paths.generated,
+			paths.input,
+		);
+		const cached = await withCachedArtwork(paths, state, sourceDesired);
+		const cacheEntry = cached.desired.entries.find(
+			(entry) => entry.origin === "cache",
+		);
+		if (cacheEntry === undefined) {
+			throw new Error("Cached artwork entry is required");
+		}
+		const cacheOnlyDesired: Desired = {
+			...cached.desired,
+			entries: [cacheEntry],
+			manifestHash: manifestHash([cacheEntry]),
+		};
+		const operation = createOperation(
+			state,
+			null,
+			cacheOnlyDesired,
+			paths.staging,
+			join(paths.generated, ".siftone", "versions"),
+			"add",
+			null,
+		);
+
+		await recoverInterruptedOperations({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+		});
+
+		const cover = join(dirname(paths.destination), "cover.jpg");
+		expect((await lstat(cover)).isSymbolicLink()).toBe(true);
+		expect(await readlink(cover)).toBe(cached.path);
+		expect(
+			state.database
+				.query<
+					{
+						origin: string;
+						source_path: string | null;
+						cache_sha256: string | null;
+					},
+					[]
+				>(
+					"SELECT origin, source_path, cache_sha256 FROM destination_entries WHERE destination_name = 'cover.jpg'",
+				)
+				.get(),
+		).toEqual({
+			origin: "cache",
+			source_path: null,
+			cache_sha256: "a".repeat(64),
+		});
+		expect(
+			state.database
+				.query<{ n: number }, []>(
+					"SELECT count(*) AS n FROM source_files",
+				)
+				.get()?.n,
+		).toBe(0);
+		expect(destinationEntries(state, operation.import_id)).toEqual([
+			{
+				origin: "cache",
+				cacheSha256: "a".repeat(64),
+				cacheRelativePath: `artwork/sha256/${"a".repeat(2)}/${"a".repeat(64)}.jpg`,
+				destinationName: "cover.jpg",
+				kind: "artwork",
+			},
+		]);
+		state.close();
+	});
+
+	test("does not finalize a staged operation after its cache object disappears", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const sourceDesired = await desiredFor(
+			paths.watchRoot,
+			paths.generated,
+			paths.input,
+		);
+		const cached = await withCachedArtwork(paths, state, sourceDesired);
+		const operation = createOperation(
+			state,
+			null,
+			cached.desired,
+			paths.staging,
+			join(paths.generated, ".siftone", "versions"),
+			"add",
+			null,
+		);
+		await mkdir(operation.staging_path, { recursive: true });
+		await Promise.all([
+			symlink(paths.source, join(operation.staging_path, "01.flac")),
+			symlink(cached.path, join(operation.staging_path, "cover.jpg")),
+		]);
+		state.database.run(
+			"UPDATE operations SET phase = 'staged' WHERE id = ?",
+			[operation.id],
+		);
+		await rm(cached.path);
+
+		await expect(
+			recoverInterruptedOperations({
+				state,
+				generatedLibraryRoot: paths.generated,
+				stagingRoot: paths.staging,
+				cacheRoot: paths.cache,
+			}),
+		).rejects.toThrow("ENOENT");
+		expect(
+			state.database
+				.query<{ phase: string }, []>("SELECT phase FROM operations")
+				.get()?.phase,
+		).toBe("staged");
+		await expect(lstat(paths.destination)).rejects.toThrow("ENOENT");
+		state.close();
+	});
+
+	test("rolls automatic artwork state back with a failed operation", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const sourceDesired = await desiredFor(
+			paths.watchRoot,
+			paths.generated,
+			paths.input,
+		);
+		const desired: Desired = {
+			...sourceDesired,
+			input: {
+				...paths.input,
+				automaticArtwork: {
+					metadataFingerprint: "f".repeat(64),
+					resolverVersion: "musicbrainz-caa-v1",
+					status: "no_match",
+					attemptCount: 1,
+					attemptedAtNs: 1n,
+				},
+			},
+			entries: [
+				...sourceDesired.entries,
+				{ ...sourceDesired.entries[0] },
+			],
+		};
+		expect(() =>
+			createOperation(
+				state,
+				null,
+				desired,
+				paths.staging,
+				join(paths.generated, ".siftone", "versions"),
+				"add",
+				null,
+			),
+		).toThrow();
+		for (const query of [
+			"SELECT count(*) AS count FROM automatic_artwork",
+			"SELECT count(*) AS count FROM artwork_cache_objects",
+			"SELECT count(*) AS count FROM source_releases",
+			"SELECT count(*) AS count FROM imports",
+			"SELECT count(*) AS count FROM operations",
+		]) {
+			expect(
+				state.database.query<{ count: number }, []>(query).get()?.count,
+			).toBe(0);
+		}
+		state.close();
+	});
+
+	test("persists and publishes selected automatic artwork after resolution", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		let resolutionFinished = false;
+		const inputs = await resolvePublicationArtwork({
+			state,
+			cacheRoot: paths.cache,
+			inputs: [paths.input],
+			resolver: {
+				async resolve() {
+					resolutionFinished = true;
+
+					return {
+						status: "selected",
+						releaseGroupId: "group",
+						releaseId: "release",
+						url: "https://example.test/cover.jpg",
+						bytes: new Uint8Array([1, 2, 3]),
+						width: 500,
+						height: 500,
+					};
+				},
+			},
+			enabled: true,
+		});
+		expect(resolutionFinished).toBe(true);
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs,
+			complete: true,
+		});
+		expect(
+			state.database
+				.query<{ status: string; cache_sha256: string }, []>(
+					"SELECT status, cache_sha256 FROM automatic_artwork",
+				)
+				.get(),
+		).toEqual({ status: "selected", cache_sha256: expect.any(String) });
+		expect(
+			state.database
+				.query<{ origin: string }, []>(
+					"SELECT origin FROM destination_entries WHERE destination_name = 'cover.jpg'",
+				)
+				.get(),
+		).toEqual({ origin: "cache" });
+		const cover = join(dirname(paths.destination), "cover.jpg");
+		expect((await lstat(cover)).isSymbolicLink()).toBe(true);
+		state.close();
+	});
+
+	test("persists automatic-artwork outcomes with the source release in reconciliation", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const disabled: PublicationInput = {
+			...paths.input,
+			automaticArtwork: {
+				metadataFingerprint: "f".repeat(64),
+				resolverVersion: "musicbrainz-caa-v1",
+				status: "disabled",
+				attemptCount: 1,
+				attemptedAtNs: 1n,
+			},
+		};
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [disabled],
+			complete: true,
+		});
+
+		expect(
+			state.database
+				.query<{ status: string; release_id: string }, []>(
+					"SELECT aa.status, aa.source_release_id AS release_id FROM automatic_artwork aa",
+				)
+				.get(),
+		).toEqual({
+			status: "disabled",
+			release_id: expect.any(String),
+		});
+
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [
+				{
+					...disabled,
+					automaticArtwork: {
+						metadataFingerprint: "f".repeat(64),
+						resolverVersion: "musicbrainz-caa-v1",
+						status: "no_match",
+						attemptCount: 1,
+						attemptedAtNs: 2n,
+					},
+				},
+			],
+			complete: true,
+		});
+		expect(
+			state.database
+				.query<{ status: string; count: number }, []>(
+					"SELECT status, count(*) AS count FROM automatic_artwork",
+				)
+				.get(),
+		).toEqual({ status: "no_match", count: 1 });
+		state.close();
 	});
 });

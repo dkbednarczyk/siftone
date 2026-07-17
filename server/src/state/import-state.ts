@@ -2,8 +2,12 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+	canonicalAbsolutePath,
+	isMissingError,
+	isPathBelowRoot,
+} from "../path-utils";
 import type { PublicationInput } from "../publication/publish";
-import { canonicalAbsolutePath, isPathBelowRoot } from "./canonical-path";
 import { bigintRow } from "./reconcile/database";
 import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 
@@ -83,9 +87,11 @@ function expectedSchemaObjects(): unknown[] {
 	}
 
 	const template = new Database(":memory:");
+
 	configure(template);
 	createFreshSchema(template);
 	expectedSchema = schemaObjects(template);
+
 	template.close();
 
 	return expectedSchema;
@@ -143,12 +149,7 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
 	try {
 		return (await readdir(path)).every((entry) => entry === ".siftone");
 	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error !== null &&
-			"code" in error &&
-			error.code === "ENOENT"
-		) {
+		if (isMissingError(error)) {
 			return true;
 		}
 

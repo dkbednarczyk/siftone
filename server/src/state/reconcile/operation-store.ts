@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import type { AutomaticArtwork } from "../../publication/publish";
 import type { ImportState } from "../import-state";
 import { immediate, nowNs } from "./database";
 import type { Desired, OperationRow, SourceEntry } from "./types";
@@ -53,6 +54,77 @@ function insertOrUpdateSourceFiles(
 			],
 		);
 	}
+}
+
+export function persistAutomaticArtwork(
+	state: ImportState,
+	releaseId: string,
+	artwork: AutomaticArtwork | undefined,
+	timestamp = nowNs(),
+): void {
+	if (artwork === undefined) {
+		return;
+	}
+
+	const cacheObject = artwork.cacheObject;
+	if (artwork.status === "selected" && cacheObject === undefined) {
+		throw new Error(
+			"Selected automatic artwork is missing its cache object",
+		);
+	}
+	if (artwork.status !== "selected" && cacheObject !== undefined) {
+		throw new Error(
+			"Non-selected automatic artwork cannot have a cache object",
+		);
+	}
+
+	if (cacheObject !== undefined) {
+		state.database.run(
+			"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, ?, ?, 'image/jpeg', ?) ON CONFLICT(sha256) DO NOTHING",
+			[
+				cacheObject.sha256,
+				cacheObject.relativePath,
+				cacheObject.byteSize,
+				cacheObject.width,
+				cacheObject.height,
+				timestamp,
+			],
+		);
+	}
+
+	state.database.run(
+		`INSERT INTO automatic_artwork (
+			source_release_id, metadata_fingerprint, resolver_version, status,
+			cache_sha256, release_group_mbid, release_mbid, source_url,
+			failure_detail, attempt_count, attempted_at_ns, next_attempt_at_ns
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_release_id) DO UPDATE SET
+			metadata_fingerprint = excluded.metadata_fingerprint,
+			resolver_version = excluded.resolver_version,
+			status = excluded.status,
+			cache_sha256 = excluded.cache_sha256,
+			release_group_mbid = excluded.release_group_mbid,
+			release_mbid = excluded.release_mbid,
+			source_url = excluded.source_url,
+			failure_detail = excluded.failure_detail,
+			attempt_count = excluded.attempt_count,
+			attempted_at_ns = excluded.attempted_at_ns,
+			next_attempt_at_ns = excluded.next_attempt_at_ns`,
+		[
+			releaseId,
+			artwork.metadataFingerprint,
+			artwork.resolverVersion,
+			artwork.status,
+			cacheObject?.sha256 ?? null,
+			artwork.releaseGroupId ?? null,
+			artwork.releaseId ?? null,
+			artwork.sourceUrl ?? null,
+			artwork.failureDetail ?? null,
+			artwork.attemptCount,
+			artwork.attemptedAtNs,
+			artwork.nextAttemptAtNs ?? null,
+		],
+	);
 }
 
 export function createOperation(
@@ -143,7 +215,20 @@ export function createOperation(
 		}
 
 		if (desired !== undefined) {
-			insertOrUpdateSourceFiles(state, releaseId, desired.entries);
+			persistAutomaticArtwork(
+				state,
+				releaseId,
+				desired.input.automaticArtwork,
+				timestamp,
+			);
+
+			insertOrUpdateSourceFiles(
+				state,
+				releaseId,
+				desired.entries.filter(
+					(entry): entry is SourceEntry => entry.origin === "source",
+				),
+			);
 		}
 
 		if (versionId !== null && versionPath !== null) {
@@ -182,17 +267,24 @@ export function createOperation(
 
 		if (desired !== undefined) {
 			for (const entry of desired.entries) {
-				state.database.run(
-					"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
-					[
-						id,
-						entry.destinationName,
-						entry.sourcePath,
-						entry.size,
-						entry.mtimeNs,
-						entry.kind,
-					],
-				);
+				if (entry.origin === "source") {
+					state.database.run(
+						"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
+						[
+							id,
+							entry.destinationName,
+							entry.sourcePath,
+							entry.size,
+							entry.mtimeNs,
+							entry.kind,
+						],
+					);
+				} else {
+					state.database.run(
+						"INSERT INTO operation_entries (operation_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'cache', NULL, ?, NULL, NULL, 'artwork')",
+						[id, entry.destinationName, entry.cacheSha256],
+					);
+				}
 			}
 		}
 	});

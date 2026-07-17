@@ -8,6 +8,8 @@ This document is deliberately organized around **ownership and flows** rather
 than implementation details. Human readers can start with the diagrams and module
 map. AI-assisted readers should use the stable paths and exported entry points in
 [Where to make a change](#where-to-make-a-change) before reading implementations.
+For the implementation-accurate startup-to-idle sequence, see the
+[server runtime pipeline](./pipeline.md).
 
 ## System at a glance
 
@@ -181,7 +183,7 @@ The schema in `state/schema.ts` records:
 | `reviews` and `reconciliation_state` | Conditions that need attention and whether observation is trustworthy enough to reconcile. |
 
 Persisted filesystem paths use canonical POSIX absolute form, enforced both by
-`state/canonical-path.ts` and SQLite constraints. This prevents traversal,
+`path-utils.ts` and SQLite constraints. This prevents traversal,
 platform separator ambiguity, and unsafe reconstruction of filesystem paths.
 
 State is not a cache that may be casually deleted. It is the proof that generated

@@ -14,6 +14,7 @@ export type SourceEntry = Readonly<{
 export type CacheEntry = Readonly<{
 	origin: "cache";
 	cacheSha256: string;
+	cacheRelativePath: string;
 	destinationName: string;
 	kind: "artwork";
 }>;
@@ -26,7 +27,7 @@ export type Desired = {
 	containerPath: string;
 	destination: string;
 	destinationPath: string;
-	entries: SourceEntry[];
+	entries: Entry[];
 	manifestHash: string;
 };
 

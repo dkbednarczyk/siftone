@@ -67,6 +67,7 @@ export async function createDailyBackup(
 	await mkdir(backupRoot, { recursive: true });
 
 	const path = join(backupRoot, backupName(now));
+
 	if ((await backupPaths(backupRoot)).includes(path)) {
 		return undefined;
 	}
@@ -74,6 +75,7 @@ export async function createDailyBackup(
 	const temporary = `${path}.tmp-${process.pid}`;
 	try {
 		const snapshot = state.database.serialize();
+
 		if (!(snapshot.buffer instanceof ArrayBuffer)) {
 			throw new Error(
 				"SQLite snapshot uses an unsupported shared buffer",
@@ -88,6 +90,7 @@ export async function createDailyBackup(
 				snapshot.byteLength,
 			),
 		);
+
 		await verifySnapshot(temporary);
 		await rename(temporary, path);
 
@@ -122,6 +125,7 @@ export async function restoreBackup({
 
 	const temporary = `${databasePath}.restore-${process.pid}`;
 	const previous = `${databasePath}.previous-${process.pid}`;
+
 	try {
 		await copyFile(backupPath, temporary);
 		await verifySnapshot(temporary);

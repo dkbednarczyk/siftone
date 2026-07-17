@@ -1,12 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import {
-	dirname,
-	extname,
-	isAbsolute,
-	relative,
-	resolve,
-	sep,
-} from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { Command } from "commander";
 import packageMetadata from "../package.json" with { type: "json" };
 import { loadServerConfig } from "./config";
@@ -20,18 +13,13 @@ import {
 	createRateLimitedScheduler,
 	createSerializedScheduler,
 } from "./musicbrainz/scheduler";
+import { isDescendant } from "./path-utils";
 
 function resolveCacheOutput(cacheRoot: string, output: string): string {
 	const outputPath = resolve(cacheRoot, output);
-	const difference = relative(cacheRoot, outputPath);
 	const extension = extname(outputPath).toLocaleLowerCase();
 
-	if (
-		difference === "" ||
-		difference === ".." ||
-		difference.startsWith(`..${sep}`) ||
-		isAbsolute(difference)
-	) {
+	if (!isDescendant(cacheRoot, outputPath)) {
 		throw new Error("--output must be a file path below paths.cache_root");
 	}
 

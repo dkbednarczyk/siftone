@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { mapBounded } from "../../util/util";
+import { entryPath } from "../entry-path";
 import type { ImportState } from "../import-state";
 import {
 	ensureDestinationParent,
@@ -14,7 +15,7 @@ import {
 import { entriesMatch, manifestHash } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
 import { operationEntries } from "./operation-entries";
-import type { OperationRow, SourceEntry } from "./types";
+import type { Entry, OperationRow } from "./types";
 
 const ENTRY_IO_CONCURRENCY = 8;
 
@@ -24,21 +25,43 @@ type PriorVersion = Readonly<{
 	version_path: string;
 }>;
 
+async function validateCacheEntries(
+	entries: readonly Entry[],
+	cacheRoot: string,
+): Promise<void> {
+	await mapBounded(
+		entries.filter((entry) => entry.origin === "cache"),
+		async (entry) => {
+			const path = entryPath(entry, cacheRoot);
+			const status = await lstat(path);
+			if (!status.isFile() || status.isSymbolicLink()) {
+				throw new Error(`Cache object is not a real file: ${path}`);
+			}
+		},
+		ENTRY_IO_CONCURRENCY,
+	);
+}
+
 async function stage(
-	entries: readonly SourceEntry[],
+	entries: readonly Entry[],
 	path: string,
+	cacheRoot: string,
 ): Promise<void> {
 	await rm(path, { recursive: true, force: true });
 
 	await mapBounded(
 		entries,
 		async (entry) => {
-			const status = await lstat(entry.sourcePath, { bigint: true });
+			const path = entryPath(entry, cacheRoot);
+			const status = await lstat(path, { bigint: true });
+			if (!status.isFile() || status.isSymbolicLink()) {
+				throw new Error(
+					`Publication entry is not a real file: ${path}`,
+				);
+			}
 			if (
-				!status.isFile() ||
-				status.isSymbolicLink() ||
-				status.size !== entry.size ||
-				status.mtimeNs !== entry.mtimeNs
+				entry.origin === "source" &&
+				(status.size !== entry.size || status.mtimeNs !== entry.mtimeNs)
 			) {
 				throw new Error(
 					`Source changed after operation planning: ${entry.sourcePath}`,
@@ -51,7 +74,11 @@ async function stage(
 	await mkdir(path, { recursive: true });
 	await mapBounded(
 		entries,
-		(entry) => symlink(entry.sourcePath, join(path, entry.destinationName)),
+		(entry) =>
+			symlink(
+				entryPath(entry, cacheRoot),
+				join(path, entry.destinationName),
+			),
 		ENTRY_IO_CONCURRENCY,
 	);
 }
@@ -110,7 +137,7 @@ function finalizeDelete(
 function finalizePublication(
 	state: ImportState,
 	operation: OperationRow,
-	entries: readonly SourceEntry[],
+	entries: readonly Entry[],
 	prior: PriorVersion | null,
 ): void {
 	if (operation.version_id === null) {
@@ -165,17 +192,24 @@ function finalizePublication(
 			[destinationId],
 		);
 		for (const entry of entries) {
-			state.database.run(
-				"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
-				[
-					destinationId,
-					entry.destinationName,
-					entry.sourcePath,
-					entry.size,
-					entry.mtimeNs,
-					entry.kind,
-				],
-			);
+			if (entry.origin === "source") {
+				state.database.run(
+					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
+					[
+						destinationId,
+						entry.destinationName,
+						entry.sourcePath,
+						entry.size,
+						entry.mtimeNs,
+						entry.kind,
+					],
+				);
+			} else {
+				state.database.run(
+					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'cache', NULL, ?, NULL, NULL, 'artwork')",
+					[destinationId, entry.destinationName, entry.cacheSha256],
+				);
+			}
 		}
 
 		state.database.run(
@@ -229,6 +263,7 @@ export async function executeOperation(
 	generatedLibraryRoot: string,
 	stagingRoot: string,
 	versionRoot: string,
+	cacheRoot: string,
 	operation: OperationRow,
 ): Promise<void> {
 	const entries = operationEntries(state, operation.id);
@@ -279,6 +314,8 @@ export async function executeOperation(
 			return;
 		}
 
+		await validateCacheEntries(entries, cacheRoot);
+
 		if (paths.version === null || operation.version_id === null) {
 			throw new InvalidOperationState(
 				"Publication operation has no version identity",
@@ -295,7 +332,7 @@ export async function executeOperation(
 			);
 		}
 		if (operation.phase === "planned") {
-			await stage(entries, paths.staging);
+			await stage(entries, paths.staging, cacheRoot);
 			updatePhase(state, operation.id, "staged");
 			operation.phase = "staged";
 		}
@@ -307,7 +344,7 @@ export async function executeOperation(
 					`Version and staging both exist: ${paths.version}`,
 				);
 			}
-			if (!(await entriesMatch(paths.version, entries))) {
+			if (!(await entriesMatch(paths.version, entries, cacheRoot))) {
 				throw new InvalidOperationState(
 					`Version does not match operation: ${paths.version}`,
 				);
