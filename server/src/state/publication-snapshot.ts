@@ -44,10 +44,9 @@ export async function desiredFor(
 		dirname(input.entries[0]?.destinationPath ?? ""),
 	);
 
-	const destinationPath = destination;
 	const containerPath = canonicalAbsolutePath(input.root);
 
-	if (!isPathBelowRoot(generatedLibraryRoot, destinationPath)) {
+	if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
 		throw new Error(
 			`Generated destination escapes its root: ${destination}`,
 		);
@@ -119,7 +118,7 @@ export async function desiredFor(
 		input,
 		containerPath,
 		destination,
-		destinationPath,
+		destinationPath: destination,
 		entries,
 		manifestHash: manifestHash(entries),
 	};
