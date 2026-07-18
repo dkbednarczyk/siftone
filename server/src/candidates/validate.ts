@@ -1,6 +1,5 @@
 import { basename, dirname, extname, relative, sep } from "node:path";
 import type { AudioTagReader, AudioTags } from "../metadata/tags";
-import { errorMessage } from "../util/util";
 import type { DiscoveredCandidate } from "./discover";
 
 export type IssueCode =
@@ -200,7 +199,7 @@ export async function validateCandidate(
 		try {
 			tags = await readTags(path);
 		} catch (error) {
-			issues.push(issue("TAG_READ_ERROR", errorMessage(error), path));
+			issues.push(issue("TAG_READ_ERROR", String(error), path));
 			break;
 		}
 

@@ -128,9 +128,7 @@ function finalizePublication(
 	prior: PriorVersion | null,
 ): void {
 	if (operation.version_id === null) {
-		throw new Error(
-			"Publication operation has no version identity",
-		);
+		throw new Error("Publication operation has no version identity");
 	}
 
 	immediate(state, () => {
@@ -140,9 +138,7 @@ function finalizePublication(
 			[operation.import_id, timestamp, operation.version_id],
 		);
 		if (promoted.changes !== 1) {
-			throw new Error(
-				"Pending version cannot be promoted",
-			);
+			throw new Error("Pending version cannot be promoted");
 		}
 
 		const destination = state.database
@@ -231,9 +227,7 @@ async function removeOwnedTemporaryLink(
 	const target = relativeVersionTarget(destination, version);
 	const status = await lstat(temporaryLink);
 	if (!status.isSymbolicLink()) {
-		throw new Error(
-			`Temporary link is unsafe: ${temporaryLink}`,
-		);
+		throw new Error(`Temporary link is unsafe: ${temporaryLink}`);
 	}
 
 	const { readlink } = await import("node:fs/promises");
@@ -268,9 +262,7 @@ export async function executeOperation(
 	try {
 		if (operation.kind === "delete") {
 			if (prior === null) {
-				throw new Error(
-					"Delete operation has no published version",
-				);
+				throw new Error("Delete operation has no published version");
 			}
 			if (operation.phase === "planned") {
 				updatePhase(state, operation.id, "staged");
@@ -304,9 +296,7 @@ export async function executeOperation(
 		await validateCacheEntries(entries, cacheRoot);
 
 		if (paths.version === null || operation.version_id === null) {
-			throw new Error(
-				"Publication operation has no version identity",
-			);
+			throw new Error("Publication operation has no version identity");
 		}
 		const versionRecord = state.database
 			.query<{ version_path: string }, [string, string]>(
@@ -314,9 +304,7 @@ export async function executeOperation(
 			)
 			.get(operation.version_id, operation.id);
 		if (versionRecord?.version_path !== paths.version) {
-			throw new Error(
-				"Operation version record is invalid",
-			);
+			throw new Error("Operation version record is invalid");
 		}
 		if (operation.phase === "planned") {
 			await stage(entries, paths.staging, cacheRoot);

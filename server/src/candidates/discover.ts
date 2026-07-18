@@ -1,7 +1,6 @@
 import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { errorMessage } from "../util/util";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([".flac", ".mp3"]);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
@@ -86,7 +85,7 @@ async function discoverSourcePaths(
 	try {
 		entries = await readdir(directory, { withFileTypes: true });
 	} catch (error) {
-		issues.push({ path: directory, message: errorMessage(error) });
+		issues.push({ path: directory, message: String(error) });
 
 		return { audioPaths: [], imagePaths: [] };
 	}
@@ -130,7 +129,7 @@ async function discoverSourcePaths(
 			try {
 				status = await lstat(path);
 			} catch (error) {
-				issues.push({ path, message: errorMessage(error) });
+				issues.push({ path, message: String(error) });
 				continue;
 			}
 
@@ -192,7 +191,7 @@ export async function discoverCandidate(
 	try {
 		status = await lstat(root);
 	} catch (error) {
-		return { issues: [{ path: root, message: errorMessage(error) }] };
+		return { issues: [{ path: root, message: String(error) }] };
 	}
 
 	if (status.isSymbolicLink() || !status.isDirectory()) {
