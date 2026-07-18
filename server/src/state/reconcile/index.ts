@@ -1,20 +1,80 @@
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { canonicalAbsolutePath, isPathWithinRoot } from "../../path-utils";
 import type { PublicationInput } from "../../publication/publish";
+import { canonicalAbsolutePath, isPathWithinRoot } from "../../util/path";
+import {
+	isStoredArtworkCacheObjectValid,
+	sweepArtworkCacheObjects,
+} from "../artwork-cache";
 import type { ImportState } from "../import-state";
-import { ensurePublicationRoots, isOwnedPublicLeaf } from "../operation-paths";
+import {
+	ensurePublicationRoots,
+	isOwnedPublicLeaf,
+	operationPaths,
+} from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
 import { immediate, nowNs } from "./database";
-import { executeOperation } from "./execute-operation";
+import { DamagedCacheObjectError, executeOperation } from "./execute-operation";
 import { currentImports, destinationEntries } from "./operation-entries";
 import {
+	clearAutomaticArtwork,
 	createOperation,
 	existingFor,
 	persistAutomaticArtwork,
 } from "./operation-store";
 import type { OperationRow } from "./types";
 import { collectRetiredVersions } from "./version-gc";
+
+async function abandonDamagedCacheOperation(
+	state: ImportState,
+	generatedLibraryRoot: string,
+	stagingRoot: string,
+	versionRoot: string,
+	operation: OperationRow,
+): Promise<void> {
+	if (operation.version_id === null || operation.version_path === null) {
+		throw new Error("Damaged cache operation has no pending version");
+	}
+
+	const pendingVersion = state.database
+		.query<{ version_path: string }, [string, string]>(
+			"SELECT version_path FROM album_versions WHERE id = ? AND origin_operation_id = ? AND state = 'pending'",
+		)
+		.get(operation.version_id, operation.id);
+	if (pendingVersion?.version_path !== operation.version_path) {
+		throw new Error(
+			"Damaged cache operation does not own a pending version",
+		);
+	}
+
+	const paths = operationPaths(
+		generatedLibraryRoot,
+		stagingRoot,
+		versionRoot,
+		operation.staging_path,
+		operation.target_destination_path,
+		operation.version_path,
+		operation.id,
+	);
+	const { rm } = await import("node:fs/promises");
+	await rm(paths.staging, { recursive: true, force: true });
+	if (paths.version === null) {
+		throw new Error("Damaged cache operation has no version path");
+	}
+	await rm(paths.version, { recursive: true, force: true });
+	immediate(state, () => {
+		state.database.run("DELETE FROM operations WHERE id = ?", [
+			operation.id,
+		]);
+		state.database.run(
+			"DELETE FROM album_versions WHERE id = ? AND state = 'pending'",
+			[operation.version_id],
+		);
+	});
+	state.markReconciliationRequired(
+		`Discarded interrupted operation with damaged artwork cache object: ${operation.id}`,
+	);
+}
 
 function containerKey(watchRoot: string, path: string): string {
 	const containerPath = canonicalAbsolutePath(
@@ -28,6 +88,27 @@ function containerKey(watchRoot: string, path: string): string {
 	return containerPath;
 }
 
+async function cacheEntriesAreValid(
+	state: ImportState,
+	cacheRoot: string,
+	entries: ReturnType<typeof destinationEntries>,
+): Promise<boolean> {
+	for (const entry of entries) {
+		if (
+			entry.origin === "cache" &&
+			!(await isStoredArtworkCacheObjectValid(
+				state,
+				cacheRoot,
+				entry.cacheSha256,
+			))
+		) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 export async function recoverInterruptedOperations({
 	state,
 	generatedLibraryRoot,
@@ -35,6 +116,7 @@ export async function recoverInterruptedOperations({
 	cacheRoot,
 	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
 	versionRetentionHours = 24,
+	onWarning,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
@@ -42,6 +124,7 @@ export async function recoverInterruptedOperations({
 	cacheRoot: string;
 	versionRoot?: string;
 	versionRetentionHours?: number;
+	onWarning?: (message: string) => void;
 }>): Promise<void> {
 	await mkdir(versionRoot, { recursive: true });
 	await ensurePublicationRoots(
@@ -57,14 +140,30 @@ export async function recoverInterruptedOperations({
 		.all();
 
 	for (const operation of operations) {
-		await executeOperation(
-			state,
-			generatedLibraryRoot,
-			stagingRoot,
-			versionRoot,
-			cacheRoot,
-			operation,
-		);
+		try {
+			await executeOperation(
+				state,
+				generatedLibraryRoot,
+				stagingRoot,
+				versionRoot,
+				cacheRoot,
+				operation,
+			);
+		} catch (error) {
+			if (!(error instanceof DamagedCacheObjectError)) {
+				throw error;
+			}
+
+			await abandonDamagedCacheOperation(
+				state,
+				generatedLibraryRoot,
+				stagingRoot,
+				versionRoot,
+				operation,
+			);
+			onWarning?.(error.message);
+		}
+		await sweepArtworkCacheObjects(state, cacheRoot, onWarning);
 	}
 	await collectRetiredVersions(
 		state,
@@ -72,6 +171,7 @@ export async function recoverInterruptedOperations({
 		versionRoot,
 		versionRetentionHours,
 	);
+	await sweepArtworkCacheObjects(state, cacheRoot, onWarning);
 }
 
 export async function hasPublishedOutputDrift({
@@ -97,6 +197,7 @@ export async function hasPublishedOutputDrift({
 		.all();
 
 	for (const publication of published) {
+		const entries = destinationEntries(state, publication.import_id);
 		if (
 			publication.destination_path === null ||
 			publication.version_path === null ||
@@ -105,12 +206,12 @@ export async function hasPublishedOutputDrift({
 				publication.version_path,
 				versionRoot,
 			)) ||
-			!(await entriesMatch(
-				publication.version_path,
-				destinationEntries(state, publication.import_id),
-				cacheRoot,
-			))
+			!(await entriesMatch(publication.version_path, entries, cacheRoot))
 		) {
+			return true;
+		}
+
+		if (!(await cacheEntriesAreValid(state, cacheRoot, entries))) {
 			return true;
 		}
 	}
@@ -233,6 +334,11 @@ export async function reconcileImports({
 				existing.version_path,
 				destinationEntries(state, existing.import_id),
 				cacheRoot,
+			)) ||
+			!(await cacheEntriesAreValid(
+				state,
+				cacheRoot,
+				destinationEntries(state, existing.import_id),
 			))
 		) {
 			scheduled.push(
@@ -260,21 +366,41 @@ export async function reconcileImports({
 					"UPDATE source_releases SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = ?",
 					[timestamp, existing.release_id],
 				);
-				persistAutomaticArtwork(
-					state,
-					existing.release_id,
-					item.input.automaticArtwork,
-					timestamp,
-				);
+				if (
+					item.entries.some(
+						(entry) =>
+							entry.origin === "source" &&
+							entry.kind === "artwork",
+					)
+				) {
+					clearAutomaticArtwork(state, existing.release_id);
+				} else {
+					persistAutomaticArtwork(
+						state,
+						existing.release_id,
+						item.input.automaticArtwork,
+						timestamp,
+					);
+				}
 			});
 		} else {
-			immediate(state, () =>
-				persistAutomaticArtwork(
-					state,
-					existing.release_id,
-					item.input.automaticArtwork,
-				),
-			);
+			immediate(state, () => {
+				if (
+					item.entries.some(
+						(entry) =>
+							entry.origin === "source" &&
+							entry.kind === "artwork",
+					)
+				) {
+					clearAutomaticArtwork(state, existing.release_id);
+				} else {
+					persistAutomaticArtwork(
+						state,
+						existing.release_id,
+						item.input.automaticArtwork,
+					);
+				}
+			});
 		}
 	}
 
@@ -374,6 +500,7 @@ export async function reconcileImports({
 			cacheRoot,
 			operation,
 		);
+		await sweepArtworkCacheObjects(state, cacheRoot, onProgress);
 
 		const completed = index + 1;
 		if (completed % 25 === 0 || completed === scheduled.length) {
@@ -388,4 +515,5 @@ export async function reconcileImports({
 		versionRoot,
 		versionRetentionHours,
 	);
+	await sweepArtworkCacheObjects(state, cacheRoot, onProgress);
 }

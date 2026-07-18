@@ -73,9 +73,11 @@ export function createCoverArtArchiveClient({
 				`https://coverartarchive.org/release/${releaseId}`,
 				{ headers: { accept: "application/json" } },
 			);
+
 			if (response.status === 404) {
 				return [];
 			}
+
 			if (!response.ok) {
 				throw new HttpError(
 					response.status,
@@ -84,6 +86,7 @@ export function createCoverArtArchiveClient({
 			}
 
 			const covers = (await response.json()) as { images?: unknown };
+
 			return Array.isArray(covers.images)
 				? (covers.images as IImage[])
 				: [];

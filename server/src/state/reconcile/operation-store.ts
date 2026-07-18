@@ -56,6 +56,16 @@ function insertOrUpdateSourceFiles(
 	}
 }
 
+export function clearAutomaticArtwork(
+	state: ImportState,
+	releaseId: string,
+): void {
+	state.database.run(
+		"DELETE FROM automatic_artwork WHERE source_release_id = ?",
+		[releaseId],
+	);
+}
+
 export function persistAutomaticArtwork(
 	state: ImportState,
 	releaseId: string,
@@ -80,7 +90,7 @@ export function persistAutomaticArtwork(
 
 	if (cacheObject !== undefined) {
 		state.database.run(
-			"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, ?, ?, 'image/jpeg', ?) ON CONFLICT(sha256) DO NOTHING",
+			"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, ?, ?, 'image/jpeg', ?) ON CONFLICT(sha256) DO UPDATE SET relative_path = excluded.relative_path, byte_size = excluded.byte_size, width = excluded.width, height = excluded.height, media_type = excluded.media_type",
 			[
 				cacheObject.sha256,
 				cacheObject.relativePath,

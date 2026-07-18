@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { PublicationInput } from "../publication/publish";
 import { openImportState } from "../state/import-state";
 import {
@@ -78,6 +86,30 @@ function seedOutcome(
 		"INSERT INTO automatic_artwork (source_release_id, metadata_fingerprint, resolver_version, status, cache_sha256, release_group_mbid, release_mbid, source_url, failure_detail, attempt_count, attempted_at_ns, next_attempt_at_ns) VALUES (?, ?, 'musicbrainz-caa-v1', ?, NULL, NULL, NULL, NULL, NULL, 2, 7, ?)",
 		[releaseId, artworkMetadataFingerprint(input), status, nextAttemptAtNs],
 	);
+}
+
+async function seedSelectedOutcome(
+	paths: Awaited<ReturnType<typeof fixture>>,
+	input: PublicationInput,
+	expectedBytes: Uint8Array,
+	storedBytes = expectedBytes,
+): Promise<{ sha256: string; path: string }> {
+	const sha256 = createHash("sha256").update(expectedBytes).digest("hex");
+	const relativePath = `artwork/sha256/${sha256.slice(0, 2)}/${sha256}.jpg`;
+	const path = join(paths.cacheRoot, relativePath);
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, storedBytes);
+	seedOutcome(paths.state, input, "no_match");
+	paths.state.database.run(
+		"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, 500, 500, 'image/jpeg', 1)",
+		[sha256, relativePath, expectedBytes.byteLength],
+	);
+	paths.state.database.run(
+		"UPDATE automatic_artwork SET status = 'selected', cache_sha256 = ? WHERE source_release_id = ?",
+		[sha256, "00000000-0000-4000-8000-000000000002"],
+	);
+
+	return { sha256, path };
 }
 
 afterEach(async () => {
@@ -276,6 +308,26 @@ describe("automatic artwork publication integration", () => {
 		expect(await resolver.resolve(input("/source/disabled"))).toEqual({
 			status: "disabled",
 		});
+		const blankContactResolver = createAutomaticArtworkResolver({
+			appName: "siftone",
+			appVersion: "test",
+			contact: " \t ",
+			musicBrainz: {
+				async searchReleaseGroups() {
+					clientCalls += 1;
+
+					return [];
+				},
+				async browseReleaseEditions() {
+					clientCalls += 1;
+
+					return [];
+				},
+			},
+		});
+		expect(
+			await blankContactResolver.resolve(input("/source/disabled")),
+		).toEqual({ status: "disabled" });
 		expect(clientCalls).toBe(0);
 
 		const paths = await fixture();
@@ -295,6 +347,86 @@ describe("automatic artwork publication integration", () => {
 			status: "transient_failure",
 			failureDetail: "offline",
 			nextAttemptAtNs: 2_000_000_001n,
+		});
+		paths.state.close();
+	});
+
+	test("re-resolves and atomically replaces missing or hash-invalid selected cache objects", async () => {
+		for (const storedBytes of [
+			undefined,
+			new Uint8Array([9, 9, 9]),
+		] as const) {
+			const paths = await fixture();
+			const release = input(join(paths.root, "winner"));
+			const expectedBytes = new Uint8Array([1, 2, 3]);
+			const seeded = await seedSelectedOutcome(
+				paths,
+				release,
+				expectedBytes,
+				storedBytes,
+			);
+			if (storedBytes === undefined) {
+				await rm(seeded.path);
+			}
+			let calls = 0;
+			const resolved = await resolvePublicationArtwork({
+				state: paths.state,
+				cacheRoot: paths.cacheRoot,
+				inputs: [release],
+				resolver: {
+					async resolve() {
+						calls += 1;
+
+						return {
+							status: "selected",
+							releaseGroupId: "group",
+							releaseId: "release",
+							url: "https://example.test/cover.jpg",
+							bytes: expectedBytes,
+							width: 500,
+							height: 500,
+						};
+					},
+				},
+				enabled: true,
+			});
+			expect(calls).toBe(1);
+			const cacheObject = resolved[0].automaticArtwork?.cacheObject;
+			if (cacheObject === undefined) {
+				throw new Error("Resolved artwork cache object is required");
+			}
+			expect(
+				await readFile(join(paths.cacheRoot, cacheObject.relativePath)),
+			).toEqual(Buffer.from(expectedBytes));
+			paths.state.close();
+		}
+	});
+
+	test("keeps damaged-cache resolution failures nonblocking", async () => {
+		const paths = await fixture();
+		const release = input(join(paths.root, "winner"));
+		const seeded = await seedSelectedOutcome(
+			paths,
+			release,
+			new Uint8Array([1, 2, 3]),
+			new Uint8Array([9, 9, 9]),
+		);
+		expect(await readFile(seeded.path)).not.toEqual(Buffer.from([1, 2, 3]));
+		const resolved = await resolvePublicationArtwork({
+			state: paths.state,
+			cacheRoot: paths.cacheRoot,
+			inputs: [release],
+			resolver: {
+				async resolve() {
+					throw new Error("offline");
+				},
+			},
+			enabled: true,
+			nowNs: () => 1n,
+		});
+		expect(resolved[0].automaticArtwork).toMatchObject({
+			status: "transient_failure",
+			failureDetail: "offline",
 		});
 		paths.state.close();
 	});

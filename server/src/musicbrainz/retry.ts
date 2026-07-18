@@ -77,35 +77,57 @@ export async function retryTransient<T>({
 		throw new Error("maxAttempts must be a positive safe integer");
 	}
 
-	return await pRetry(
-		async (attempt) => {
-			onAttempt?.(attempt);
-			return await scheduler.run(() => task(attempt));
-		},
-		{
-			retries: maxAttempts - 1,
-			minTimeout: 0,
-			maxTimeout: 0,
-			onFailedAttempt: async ({ error, attemptNumber, retriesLeft }) => {
-				if (
-					!(error instanceof TransientRequestError) ||
-					retriesLeft === 0
-				) {
-					return;
+	try {
+		return await pRetry(
+			async (attempt) => {
+				onAttempt?.(attempt);
+				try {
+					return await scheduler.run(() => task(attempt));
+				} catch (error) {
+					if (isTransient(error)) {
+						throw new TransientRequestError(error);
+					}
+
+					throw error;
 				}
-
-				const originalError = error.originalError;
-
-				const retryAfter =
-					originalError instanceof HttpError
-						? retryAfterMs(originalError.retryAfter, now())
-						: undefined;
-
-				await sleep(
-					retryAfter ?? retryBackoffDelayMs(attemptNumber, random),
-				);
 			},
-			shouldRetry: ({ error }) => error instanceof TransientRequestError,
-		},
-	);
+			{
+				retries: maxAttempts - 1,
+				minTimeout: 0,
+				maxTimeout: 0,
+				onFailedAttempt: async ({
+					error,
+					attemptNumber,
+					retriesLeft,
+				}) => {
+					if (
+						!(error instanceof TransientRequestError) ||
+						retriesLeft === 0
+					) {
+						return;
+					}
+
+					const originalError = error.originalError;
+
+					const retryAfter =
+						originalError instanceof HttpError
+							? retryAfterMs(originalError.retryAfter, now())
+							: undefined;
+
+					await sleep(
+						retryAfter ??
+							retryBackoffDelayMs(attemptNumber, random),
+					);
+				},
+				shouldRetry: ({ error }) =>
+					error instanceof TransientRequestError,
+			},
+		);
+	} catch (error) {
+		if (error instanceof TransientRequestError) {
+			throw error.originalError;
+		}
+
+		throw error;
+	}
 }

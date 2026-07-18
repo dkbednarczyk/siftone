@@ -6,7 +6,7 @@ import {
 	isSameOrDescendant,
 	resolveExistingDirectory,
 	validateAbsolutePath,
-} from "./path-utils";
+} from "./util/path";
 
 export type ServerPaths = Readonly<{
 	watchRoot: string;

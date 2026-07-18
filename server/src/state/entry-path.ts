@@ -3,7 +3,7 @@ import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathBelowRoot,
-} from "../path-utils";
+} from "../util/path";
 import type { Entry } from "./reconcile/types";
 
 /** Resolves an entry target without allowing cache objects to escape cacheRoot. */

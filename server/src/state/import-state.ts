@@ -2,12 +2,12 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { PublicationInput } from "../publication/publish";
 import {
 	canonicalAbsolutePath,
 	isMissingError,
 	isPathBelowRoot,
-} from "../path-utils";
-import type { PublicationInput } from "../publication/publish";
+} from "../util/path";
 import { bigintRow } from "./reconcile/database";
 import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 

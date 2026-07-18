@@ -6,7 +6,7 @@ import {
 	isPathBelowRoot,
 	isRealDirectory,
 	isSameOrDescendant,
-} from "../path-utils";
+} from "../util/path";
 
 export async function isMissing(path: string): Promise<boolean> {
 	try {

@@ -9,7 +9,7 @@ differs from higher-level design documentation.
 Bun entry point
   -> parse CLI and validate TOML
   -> bind local HTTP listener
-  -> open SQLite -> daily backup -> recover journaled operations
+  -> open SQLite -> daily backup -> recover journaled operations -> sweep cache
   -> observe source snapshot -> scheduler idle (degraded pending confirmation)
   -> later identical complete snapshot
   -> discover -> tag/read/validate -> plan/arbitrate -> artwork
@@ -30,9 +30,10 @@ Bun entry point
 4. **Open state** — `openImportState` validates the SQLite ownership database.
    It refuses a non-empty generated/version root with no state, preventing
    adoption of unmanaged output.
-5. **Preserve and recover** — `createDailyBackup` creates a verified daily
-   SQLite backup; `recoverInterruptedOperations` resumes durable work left by
-   an earlier interrupted run.
+5. **Preserve, recover, and sweep** — `createDailyBackup` creates a verified
+   daily SQLite backup; `recoverInterruptedOperations` resumes durable work left
+   by an earlier interrupted run, then sweeps DB-known artwork cache objects with
+   no automatic-artwork, published-destination, or frozen-operation reference.
 6. **Observe source** — `observeSource` and `observeSourceManifest` hash
    immediate real source containers. A complete snapshot is pending; an
    incomplete one marks reconciliation required. This step does not validate
@@ -64,7 +65,9 @@ rescan request, the scheduler performs one serial run:
    - global collision arbitration, which prefers equivalent FLAC over MP3 and
      sends non-equivalent collisions for review rather than choosing a winner.
 3. **Resolve optional automatic artwork** — `resolvePublicationArtwork` adds
-   eligible cache-backed artwork inputs without mutating the source tree.
+   eligible cache-backed artwork inputs without mutating the source tree. Local
+   selected art bypasses lookup; a missing or SHA-256-invalid selected cache
+   object is re-resolved nonblockingly before reconciliation.
 4. **Reconcile the desired state** — `reconcileImports` compares plans with
    SQLite and the owned generated tree. It schedules journaled **add**,
    **replace**, **repair**, or delayed **delete** operations. Invalid or
@@ -76,9 +79,11 @@ rescan request, the scheduler performs one serial run:
    version directory, then atomically renames a temporary public album-leaf
    symlink into place. It refuses unmanaged destinations and records unsafe
    conditions as `attention_required` reviews.
-6. **Collect retired versions** — `collectRetiredVersions` removes only
-   unreferenced, expired immutable versions. A complete issue-free reconciliation
-   clears the degraded requirement.
+6. **Collect retired versions and cache objects** — `collectRetiredVersions`
+   removes only unreferenced, expired immutable versions. After every successful
+   operation, artwork sweeping removes only cache objects with no durable
+   automatic-artwork, published-destination, or frozen-operation reference. A
+   complete issue-free reconciliation clears the degraded requirement.
 
 ## Idle, failures, and shutdown
 

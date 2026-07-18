@@ -165,6 +165,29 @@ power loss because directory fsync is deliberately not required.
 tests. The normal runtime uses the richer operation journal in `state/reconcile/`.
 Both preserve the same central rule: no replacement or adoption of unknown output.
 
+### Automatic artwork and cache lifecycle
+
+After global collision arbitration, artless winners resolve automatic artwork
+concurrently before their complete winner set is reconciled. Local selected JPEG
+or PNG artwork bypasses remote lookup and takes precedence over any prior
+automatic result. Without a configured MusicBrainz contact, lookup is disabled
+without a network request; other unavailable or failed lookups are nonblocking
+and publication continues without automatic art.
+
+The MusicBrainz adapter spaces top-level metadata requests by at least one
+second; the Cover Art Archive adapter uses one serialized lane. Only validated
+Front JPEG thumbnails enter the managed cache. Each object is content-addressed
+at `cache_root/artwork/sha256/<prefix>/<sha256>.jpg`, atomically installed, and
+represented by a cache-origin publication entry rather than a source path.
+
+SQLite references from automatic outcomes, current published destinations, and
+frozen operations protect a cache object. Sweeping runs after recovery and each
+successful operation, deleting only unreferenced DB-known objects. A missing or
+SHA-256-invalid selected object is a cache miss: resolution runs again and can
+repair the generated output; a new failure remains nonblocking. Local-art
+replacement deletes its automatic mapping only in the successful publication
+transaction, so in-flight and current references remain protected.
+
 ## State, ownership, and recovery
 
 `state/import-state.ts` opens exactly one destructive SQLite database,
@@ -204,8 +227,9 @@ coordination mechanism.
 | `src/metadata/tags.ts` | Read-only adapter around `music-metadata` | Makes embedded tags the single source of metadata and keeps third-party parsing at the edge. |
 | `src/publication/plan.ts` | Deterministic sanitized album/entry layout | Lets destination conflicts be found before filesystem writes. |
 | `src/publication/prepare.ts` | Scan orchestration, logical-release grouping, collision arbitration | Converts source observations into safe desired publication plans. |
+| `src/musicbrainz/` | MusicBrainz/CAA adapters, matching, retries, and automatic-artwork resolution | Keeps remote policy and bounded network work outside publication and state mutation. |
 | `src/publication/publish.ts` | Standalone preflight/stage/publish primitive | Provides a narrow atomic publisher for direct use and tests. |
-| `src/state/import-state.ts`, `schema.ts` | SQLite lifecycle, ownership guard, database format | Contains the durable source of truth for managed output. |
+| `src/state/import-state.ts`, `schema.ts`, `artwork-cache.ts` | SQLite lifecycle, ownership guard, cache validation and sweeping | Contains the durable source of truth for managed output and reference-aware cache cleanup. |
 | `src/state/reconcile/` | Desired-vs-recorded comparison, operation journal, resume logic | Coordinates filesystem and database transitions at one safety boundary. |
 | `src/state/watcher.ts` | Single-flight timer scheduling and retry backoff | Triggers complete bounded re-observation without recursive filesystem watches. |
 | `src/state/*-paths.ts`, `publication-snapshot.ts`, `reconcile/types.ts` | Path safety, manifests, and reconciliation vocabulary | Keeps the critical reconciler readable and its invariants reusable. |
@@ -250,13 +274,15 @@ For a typical server change:
 ## Current scope and intentionally open boundaries
 
 Implemented today: configuration validation, periodic complete scans, tag-based
-planning, SQLite ownership/state, crash recovery, daily backups, scheduled
-reconciliation, atomic symlink publication, restore, health, and local
-reconciliation-testing routes.
+planning, automatic MusicBrainz/Cover Art Archive artwork resolution, managed
+artwork-cache lifecycle, SQLite ownership/state, crash recovery, daily backups,
+scheduled reconciliation, atomic symlink publication, restore, health, and
+local reconciliation-testing routes.
 
 Not yet implemented: the authenticated management REST API, SSE, CLI
-management flows, review resolution UI/API, most artwork cache/remote-artwork
-work, and the broader policy described as planned in `server/README.md`.
+management flows, review resolution UI/API, embedded-art extraction, and
+artwork conversion policy beyond validated local sidecars and automatic JPEG
+cache objects.
 
 Do not add playback, media serving, tag editing, Beets integration, source-tree
 writes, automatic adoption of output, or Electron APIs. Those violate Siftone's

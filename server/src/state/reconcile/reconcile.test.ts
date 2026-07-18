@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	lstat,
 	mkdir,
@@ -26,6 +27,7 @@ import type { Desired } from "./types";
 import { collectRetiredVersions } from "./version-gc";
 
 const roots: string[] = [];
+const TEST_CACHE_SHA256 = createHash("sha256").update("cover").digest("hex");
 afterEach(async () => {
 	await Promise.all(
 		roots
@@ -77,7 +79,7 @@ async function withCachedArtwork(
 	state: Awaited<ReturnType<typeof openImportState>>,
 	desired: Desired,
 ): Promise<{ desired: Desired; path: string }> {
-	const cacheSha256 = "a".repeat(64);
+	const cacheSha256 = TEST_CACHE_SHA256;
 	const cacheRelativePath = `artwork/sha256/${cacheSha256.slice(0, 2)}/${cacheSha256}.jpg`;
 	const path = join(paths.cache, cacheRelativePath);
 	await mkdir(dirname(path), { recursive: true });
@@ -543,6 +545,38 @@ describe("reconciliation", () => {
 		}
 	});
 
+	test("sweeps unreferenced cache objects after startup recovery", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const sha256 = "b".repeat(64);
+		const relativePath = `artwork/sha256/${sha256.slice(0, 2)}/${sha256}.jpg`;
+		const path = join(paths.cache, relativePath);
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, "orphan");
+		state.database.run(
+			"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, 6, 500, 500, 'image/jpeg', 1)",
+			[sha256, relativePath],
+		);
+		await recoverInterruptedOperations({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+		});
+		await expect(lstat(path)).rejects.toThrow();
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM artwork_cache_objects",
+				)
+				.get()?.count,
+		).toBe(0);
+		state.close();
+	});
+
 	test("recovers and finalizes cache artwork without source-file rows", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
@@ -602,7 +636,7 @@ describe("reconciliation", () => {
 		).toEqual({
 			origin: "cache",
 			source_path: null,
-			cache_sha256: "a".repeat(64),
+			cache_sha256: TEST_CACHE_SHA256,
 		});
 		expect(
 			state.database
@@ -614,8 +648,8 @@ describe("reconciliation", () => {
 		expect(destinationEntries(state, operation.import_id)).toEqual([
 			{
 				origin: "cache",
-				cacheSha256: "a".repeat(64),
-				cacheRelativePath: `artwork/sha256/${"a".repeat(2)}/${"a".repeat(64)}.jpg`,
+				cacheSha256: TEST_CACHE_SHA256,
+				cacheRelativePath: `artwork/sha256/${TEST_CACHE_SHA256.slice(0, 2)}/${TEST_CACHE_SHA256}.jpg`,
 				destinationName: "cover.jpg",
 				kind: "artwork",
 			},
@@ -623,7 +657,7 @@ describe("reconciliation", () => {
 		state.close();
 	});
 
-	test("does not finalize a staged operation after its cache object disappears", async () => {
+	test("abandons a staged operation with a damaged cache object without aborting recovery", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
 			stateRoot: paths.stateRoot,
@@ -655,27 +689,102 @@ describe("reconciliation", () => {
 		);
 		await rm(cached.path);
 
-		await expect(
-			recoverInterruptedOperations({
-				state,
-				generatedLibraryRoot: paths.generated,
-				stagingRoot: paths.staging,
-				cacheRoot: paths.cache,
-			}),
-		).rejects.toThrow("ENOENT");
+		const warnings: string[] = [];
+		await recoverInterruptedOperations({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			onWarning: (message) => warnings.push(message),
+		});
+		expect(warnings).toEqual([
+			`Cache object is missing or invalid: ${TEST_CACHE_SHA256}`,
+		]);
 		expect(
 			state.database
-				.query<{ phase: string }, []>("SELECT phase FROM operations")
-				.get()?.phase,
-		).toBe("staged");
-		expect(
-			state.database
-				.query<{ n: number }, [string]>(
-					"SELECT count(*) AS n FROM reviews WHERE operation_id = ?",
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM operations",
 				)
-				.get(operation.id)?.n,
+				.get()?.count,
 		).toBe(0);
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM album_versions WHERE state = 'pending'",
+				)
+				.get()?.count,
+		).toBe(0);
+		expect(state.isReconciliationRequired()).toBe(true);
+		await expect(lstat(operation.staging_path)).rejects.toThrow("ENOENT");
 		await expect(lstat(paths.destination)).rejects.toThrow("ENOENT");
+		state.close();
+	});
+
+	test("finalizes a filesystem-ahead damaged cache operation before normal repair", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const sourceDesired = await desiredFor(
+			paths.watchRoot,
+			paths.generated,
+			paths.input,
+		);
+		const cached = await withCachedArtwork(paths, state, sourceDesired);
+		const operation = createOperation(
+			state,
+			null,
+			cached.desired,
+			paths.staging,
+			join(paths.generated, ".siftone", "versions"),
+			"add",
+			null,
+		);
+		if (operation.version_path === null) {
+			throw new Error("Operation version is required");
+		}
+		await mkdir(operation.version_path, { recursive: true });
+		await Promise.all([
+			symlink(paths.source, join(operation.version_path, "01.flac")),
+			symlink(cached.path, join(operation.version_path, "cover.jpg")),
+		]);
+		const publicLeaf = dirname(paths.destination);
+		await mkdir(dirname(publicLeaf), { recursive: true });
+		await symlink(
+			relative(dirname(publicLeaf), operation.version_path),
+			publicLeaf,
+		);
+		state.database.run(
+			"UPDATE operations SET phase = 'swapped' WHERE id = ?",
+			[operation.id],
+		);
+		await rm(cached.path);
+		await recoverInterruptedOperations({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+		});
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM operations",
+				)
+				.get()?.count,
+		).toBe(0);
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: true,
+		});
+		await expect(
+			lstat(join(dirname(paths.destination), "cover.jpg")),
+		).rejects.toThrow();
 		state.close();
 	});
 
@@ -786,6 +895,133 @@ describe("reconciliation", () => {
 		).toEqual({ origin: "cache" });
 		const cover = join(dirname(paths.destination), "cover.jpg");
 		expect((await lstat(cover)).isSymbolicLink()).toBe(true);
+		state.close();
+	});
+
+	test("supersedes automatic artwork with local artwork before collecting its cache object", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		const resolved = await resolvePublicationArtwork({
+			state,
+			cacheRoot: paths.cache,
+			inputs: [paths.input],
+			resolver: {
+				async resolve() {
+					return {
+						status: "selected",
+						releaseGroupId: "group",
+						releaseId: "release",
+						url: "https://example.test/cover.jpg",
+						bytes: new Uint8Array([1, 2, 3]),
+						width: 500,
+						height: 500,
+					};
+				},
+			},
+			enabled: true,
+		});
+		const cacheObject = resolved[0].automaticArtwork?.cacheObject;
+		if (cacheObject === undefined) {
+			throw new Error("Automatic artwork cache object is required");
+		}
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: resolved,
+			complete: true,
+		});
+		const localArtwork = join(paths.sourceRoot, "cover.jpg");
+		const localInput: PublicationInput = {
+			...paths.input,
+			entries: [
+				...paths.input.entries,
+				{
+					sourcePath: localArtwork,
+					destinationPath: join(
+						dirname(paths.destination),
+						"cover.jpg",
+					),
+				},
+			],
+		};
+		await writeFile(localArtwork, "local cover");
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [localInput],
+			complete: true,
+		});
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM automatic_artwork",
+				)
+				.get()?.count,
+		).toBe(0);
+		expect(
+			state.database
+				.query<{ origin: string }, []>(
+					"SELECT origin FROM destination_entries WHERE destination_name = 'cover.jpg'",
+				)
+				.get()?.origin,
+		).toBe("source");
+		await expect(
+			lstat(join(paths.cache, cacheObject.relativePath)),
+		).rejects.toThrow();
+		const releaseId = state.database
+			.query<{ source_release_id: string }, []>(
+				"SELECT source_release_id FROM imports",
+			)
+			.get()?.source_release_id;
+		if (releaseId === undefined) {
+			throw new Error("Published release is required");
+		}
+		await mkdir(dirname(join(paths.cache, cacheObject.relativePath)), {
+			recursive: true,
+		});
+		await writeFile(
+			join(paths.cache, cacheObject.relativePath),
+			new Uint8Array([1, 2, 3]),
+		);
+		state.database.run(
+			"INSERT INTO artwork_cache_objects (sha256, relative_path, byte_size, width, height, media_type, created_at_ns) VALUES (?, ?, ?, ?, ?, 'image/jpeg', 1)",
+			[
+				cacheObject.sha256,
+				cacheObject.relativePath,
+				cacheObject.byteSize,
+				cacheObject.width,
+				cacheObject.height,
+			],
+		);
+		state.database.run(
+			"INSERT INTO automatic_artwork (source_release_id, metadata_fingerprint, resolver_version, status, cache_sha256, attempt_count, attempted_at_ns) VALUES (?, 'fingerprint', 'resolver', 'selected', ?, 1, 1)",
+			[releaseId, cacheObject.sha256],
+		);
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [localInput],
+			complete: true,
+		});
+		expect(
+			state.database
+				.query<{ count: number }, []>(
+					"SELECT count(*) AS count FROM automatic_artwork",
+				)
+				.get()?.count,
+		).toBe(0);
 		state.close();
 	});
 

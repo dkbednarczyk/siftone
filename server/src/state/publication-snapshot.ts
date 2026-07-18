@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, dirname, extname, join, relative } from "node:path";
+import type { PublicationInput } from "../publication/publish";
 import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathBelowRoot,
 	isPathWithinRoot,
-} from "../path-utils";
-import type { PublicationInput } from "../publication/publish";
+} from "../util/path";
 import { entryPath } from "./entry-path";
 import type { Desired, Entry } from "./reconcile/types";
 

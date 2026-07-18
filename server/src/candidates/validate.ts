@@ -199,7 +199,13 @@ export async function validateCandidate(
 		try {
 			tags = await readTags(path);
 		} catch (error) {
-			issues.push(issue("TAG_READ_ERROR", String(error), path));
+			issues.push(
+				issue(
+					"TAG_READ_ERROR",
+					error instanceof Error ? error.message : String(error),
+					path,
+				),
+			);
 			break;
 		}
 

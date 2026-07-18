@@ -15,7 +15,7 @@ import {
 	type AudioTags,
 	readAudioTags,
 } from "../metadata/tags";
-import { isDescendant } from "../path-utils";
+import { isDescendant } from "../util/path";
 import {
 	type PlannedSymlink,
 	type PublicationPlanIssue,

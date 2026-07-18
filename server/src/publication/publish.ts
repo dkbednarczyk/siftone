@@ -17,7 +17,7 @@ import {
 	resolve,
 	sep,
 } from "node:path";
-import { isDescendant, isMissingError, isRealDirectory } from "../path-utils";
+import { isDescendant, isMissingError, isRealDirectory } from "../util/path";
 import type { PlannedSymlink } from "./plan";
 
 export type AutomaticArtworkStatus =

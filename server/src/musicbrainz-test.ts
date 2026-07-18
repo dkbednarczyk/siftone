@@ -13,7 +13,7 @@ import {
 	createRateLimitedScheduler,
 	createSerializedScheduler,
 } from "./musicbrainz/scheduler";
-import { isDescendant } from "./path-utils";
+import { isDescendant } from "./util/path";
 
 function resolveCacheOutput(cacheRoot: string, output: string): string {
 	const outputPath = resolve(cacheRoot, output);

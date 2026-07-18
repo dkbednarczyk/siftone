@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
+import { isStoredArtworkCacheObjectValid } from "../artwork-cache";
 import { entryPath } from "../entry-path";
 import type { ImportState } from "../import-state";
 import {
@@ -15,6 +16,8 @@ import { immediate, nowNs } from "./database";
 import { operationEntries } from "./operation-entries";
 import type { Entry, OperationRow } from "./types";
 
+export class DamagedCacheObjectError extends Error {}
+
 type PriorVersion = Readonly<{
 	destination_path: string;
 	version_id: string;
@@ -22,6 +25,7 @@ type PriorVersion = Readonly<{
 }>;
 
 async function validateCacheEntries(
+	state: ImportState,
 	entries: readonly Entry[],
 	cacheRoot: string,
 ): Promise<void> {
@@ -30,10 +34,16 @@ async function validateCacheEntries(
 			continue;
 		}
 
-		const path = entryPath(entry, cacheRoot);
-		const status = await lstat(path);
-		if (!status.isFile() || status.isSymbolicLink()) {
-			throw new Error(`Cache object is not a real file: ${path}`);
+		if (
+			!(await isStoredArtworkCacheObjectValid(
+				state,
+				cacheRoot,
+				entry.cacheSha256,
+			))
+		) {
+			throw new DamagedCacheObjectError(
+				`Cache object is missing or invalid: ${entry.cacheSha256}`,
+			);
 		}
 	}
 }
@@ -147,7 +157,7 @@ function finalizePublication(
 			)
 			.get(operation.import_id);
 		const destinationId = destination?.id ?? randomUUID();
-		if (destination === null) {
+		if (destination === null || destination === undefined) {
 			state.database.run(
 				"INSERT INTO published_destinations (id, import_id, version_id, destination_path, published_at_ns) VALUES (?, ?, ?, ?, ?)",
 				[
@@ -193,6 +203,18 @@ function finalizePublication(
 					[destinationId, entry.destinationName, entry.cacheSha256],
 				);
 			}
+		}
+
+		if (
+			entries.some(
+				(entry) =>
+					entry.origin === "source" && entry.kind === "artwork",
+			)
+		) {
+			state.database.run(
+				"DELETE FROM automatic_artwork WHERE source_release_id = ?",
+				[operation.source_release_id],
+			);
 		}
 
 		state.database.run(
@@ -259,8 +281,18 @@ export async function executeOperation(
 	);
 	const prior = priorVersion(state, operation.import_id);
 
-	if (operation.kind !== "delete") {
-		await validateCacheEntries(entries, cacheRoot);
+	if (
+		operation.kind !== "delete" &&
+		!(
+			paths.version !== null &&
+			(await isOwnedPublicLeaf(
+				paths.destination,
+				paths.version,
+				versionRoot,
+			))
+		)
+	) {
+		await validateCacheEntries(state, entries, cacheRoot);
 	}
 
 	try {

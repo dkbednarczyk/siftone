@@ -15,7 +15,7 @@ import {
 	isSameOrDescendant,
 	resolveExistingDirectory,
 	validateAbsolutePath,
-} from "./path-utils";
+} from "./path";
 
 const temporaryDirectories: string[] = [];
 

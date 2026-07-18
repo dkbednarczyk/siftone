@@ -103,14 +103,12 @@ bun run --cwd server musicbrainz:test \
   --album "Album Title"
 ```
 
-The standalone prototype only accepts an exact MusicBrainz release-group match
-for the tagged album artist and title, then compares up to 100 matching release
-editions. It downloads only `Front`-type archive thumbnails, prefers the `1200`-pixel
-JPEG (then `500` and `250`), limits every download to 5 MiB, and writes its
+The compiled utility uses the same resolver as the import pipeline. It accepts
+only approved Cover Art Archive `Front` JPEG thumbnails, tries `1200` then
+`500` pixels, rejects images below 500 pixels or above 5 MiB, and writes the
 selected file below `paths.cache_root` at `musicbrainz-test/cover.jpg` by
-default. Pass a relative `--output` path
-ending in `.jpg` or `.jpeg`, or `--config /path/to/config.toml`, to override
-those defaults. It does not yet participate in import or publication.
+default. Pass a relative `--output` path ending in `.jpg` or `.jpeg`, or
+`--config /path/to/config.toml`, to override those defaults.
 
 Build the standalone prototype with:
 
@@ -214,17 +212,30 @@ reported for review.
 
 ## Artwork
 
-Qualifying JPEG/PNG sidecar artwork is implemented: Siftone ranks `cover.{ext}`
-first, then conservative normalized album-name matches in the candidate root
-or a
-directory containing validated audio. It publishes the first as an unchanged
-`cover.jpg` or `cover.png` symlink and reports ignored alternatives as warnings.
+Qualifying JPEG/PNG sidecar artwork is ranked with `cover.{ext}` first, then
+conservative normalized album-name matches in the candidate root or a directory
+containing validated audio. It publishes the first unchanged as `cover.jpg` or
+`cover.png`; ignored alternatives are warnings. Local selected art always wins
+and removes any prior automatic-artwork mapping after the replacement is safely
+published.
 
-Embedded-art extraction into the managed cache and remote artwork lookup through
-`https://covers.musichoarders.xyz/api/search` remain planned. The planned
-conversion policy is JPEG for opaque art and PNG for transparent art, without
-upscaling and with a configurable maximum resolution (default `3000×3000`). CUE,
-M3U, and rip logs are never published or trusted as metadata.
+Artless, already-arbitrated winners may resolve automatic artwork through
+MusicBrainz and the Cover Art Archive immediately before publication. Set
+`musicbrainz.contact` to enable it; absent or blank contact configuration
+persists a nonblocking `disabled` outcome and makes no network requests. The
+daemon serializes Cover Art Archive requests, spaces top-level MusicBrainz
+requests by at least one second, and records terminal, transient, and selected
+outcomes. Transient failures retry during preparation, then publish without art
+with a backoff for a later scan.
+
+Automatic objects are JPEGs stored content-addressably below
+`paths.cache_root/artwork/sha256/<prefix>/<sha256>.jpg`. They are installed by
+atomic rename only after validation, referenced from SQLite publication and
+operation snapshots, and swept only when no automatic-artwork, active-operation,
+or published-destination reference remains. A missing, non-regular, wrong-size,
+or SHA-256-invalid object is treated as a cache miss: Siftone resolves again and
+repairs output on success, or publishes nonblockingly without automatic art on
+failure. CUE, M3U, and rip logs are never published or trusted as metadata.
 
 ## State and recovery
 

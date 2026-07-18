@@ -7,8 +7,8 @@ can distinguish completed work from approved but unimplemented scope.
 ## Status
 
 - Approved by user: 2026-07-16
-- Current phase: 6 — Complete cache-object lifecycle management: sweeping,
-  local-art supersession, and damaged-cache repair next.
+- Current phase: complete — All approved automatic-artwork phases are
+  implemented and validated.
 - Phase 1 completed: source output is deleted immediately after a complete scan
   confirms the source release is absent; uncertain observations remain
   non-destructive.
@@ -159,11 +159,22 @@ can distinguish completed work from approved but unimplemented scope.
       and rollback coverage, full server tests (153), typecheck, Biome/ShellCheck,
       frozen install, isolated Linux compiled builds, an isolated no-contact
       compiled-server health smoke, and `git diff --check` passed.
-- [ ] Phase 6 — Complete reference-aware cleanup, startup/post-commit sweeping,
-      local-art supersession, and damaged-cache repair. The minimal atomic object
-      installation required by Phase 5 is already in place.
-- [ ] Phase 7 — Update documentation; run full validation and a live smoke test
-      without exposing the configured MusicBrainz contact.
+- [x] Phase 6 — Added reference-aware cache-object sweeping after startup
+      recovery and every successful reconciliation commit; automatic-artwork,
+      frozen-operation, and published-destination references are protected.
+      Local selected art transactionally supersedes automatic mappings only after
+      publication, and selected objects are SHA-256-validated before reuse.
+      Missing or invalid objects re-resolve nonblockingly; damaged uncommitted
+      operations are safely abandoned during recovery so startup continues.
+      Focused artwork and reconciliation tests (25), TypeScript typecheck, and
+      targeted Biome checks passed.
+- [x] Phase 7 — Updated server README, architecture, and runtime-pipeline
+      documentation for resolver policy, local-art precedence, cache lifecycle,
+      retries, and damaged-cache repair. Frozen install, all 168 server tests,
+      TypeScript, Biome, ShellCheck, both Linux builds, isolated native compiled
+      health smoke, SQLite schema/integrity coverage, and `git diff --check`
+      passed. A configured-contact live resolver smoke completed without printing
+      the contact.
 
 ## Required validation
 
@@ -175,9 +186,10 @@ without printing it.
 
 ## Remaining risks
 
-- CAA selection relies on MusicBrainz browse metadata; response fields and CAA
-  availability must be mocked thoroughly and confirmed in the final smoke test.
-- A five-request CAA cap trades coverage for bounded latency/load; expose
-  `edition_cap_reached` clearly.
-- Cache-object lifecycle must remain safe across staged, published, replacement,
-  repair, and delete operations.
+- CAA selection relies on MusicBrainz browse metadata; provider field changes
+  and availability still need operational monitoring.
+- A five-request CAA cap deliberately trades coverage for bounded latency and
+  load; `edition_cap_reached` remains a visible persisted outcome.
+- Cache-object lifecycle is protected by SQLite snapshots and recovery tests;
+  filesystem-level faults between atomic cache replacement and SQLite commit
+  remain a nonblocking re-resolution path.

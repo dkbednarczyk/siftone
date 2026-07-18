@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
 	ArtworkCacheObject,
@@ -12,6 +12,10 @@ export type {
 	AutomaticArtwork,
 } from "../publication/publish";
 
+import {
+	artworkCachePath,
+	isValidArtworkCacheObject,
+} from "../state/artwork-cache";
 import type { ImportState } from "../state/import-state";
 import { bigintRow } from "../state/reconcile/database";
 import {
@@ -105,9 +109,7 @@ function storedArtwork(
 			row.width === null ||
 			row.height === null
 		) {
-			throw new Error(
-				"Selected automatic artwork is missing its cache object",
-			);
+			return undefined;
 		}
 
 		return {
@@ -156,50 +158,29 @@ async function installArtworkObject(
 
 	const sha256 = createHash("sha256").update(resolution.bytes).digest("hex");
 	const relativePath = `artwork/sha256/${sha256.slice(0, 2)}/${sha256}.jpg`;
-	const directory = join(cacheRoot, "artwork", "sha256", sha256.slice(0, 2));
-	const destination = join(cacheRoot, relativePath);
-
-	await mkdir(directory, { recursive: true });
-	try {
-		const existing = await lstat(destination);
-		if (!existing.isFile() || existing.isSymbolicLink()) {
-			throw new Error(
-				`Artwork cache object is not a real file: ${destination}`,
-			);
-		}
-	} catch (error) {
-		if (
-			!(error instanceof Error) ||
-			!("code" in error) ||
-			error.code !== "ENOENT"
-		) {
-			throw error;
-		}
-
-		const temporary = join(directory, `.${sha256}.${randomUUID()}.tmp`);
-		try {
-			await writeFile(temporary, resolution.bytes, { flag: "wx" });
-			await rename(temporary, destination);
-		} catch (renameError) {
-			if (
-				!(renameError instanceof Error) ||
-				!("code" in renameError) ||
-				renameError.code !== "EEXIST"
-			) {
-				throw renameError;
-			}
-		} finally {
-			await rm(temporary, { force: true });
-		}
-	}
-
-	return {
+	const cacheObject = {
 		sha256,
 		relativePath,
 		byteSize: resolution.bytes.byteLength,
 		width: resolution.width,
 		height: resolution.height,
 	};
+	const directory = join(cacheRoot, "artwork", "sha256", sha256.slice(0, 2));
+	const destination = artworkCachePath(cacheRoot, relativePath);
+
+	await mkdir(directory, { recursive: true });
+	if (!(await isValidArtworkCacheObject(cacheRoot, cacheObject))) {
+		const temporary = join(directory, `.${sha256}.${randomUUID()}.tmp`);
+		try {
+			await writeFile(temporary, resolution.bytes, { flag: "wx" });
+			// Replacing a damaged object is atomic; never write into it in place.
+			await rename(temporary, destination);
+		} finally {
+			await rm(temporary, { force: true });
+		}
+	}
+
+	return cacheObject;
 }
 
 function retryAtNs(attemptCount: number, nowNs: bigint): bigint {
@@ -309,10 +290,21 @@ export async function resolvePublicationArtwork({
 			const fingerprint = artworkMetadataFingerprint(input);
 			const existing = existingArtwork(state, input);
 			const timestamp = nowNs();
-			const current =
+			let current =
 				existing === undefined
 					? undefined
 					: storedArtwork(existing, fingerprint, enabled, timestamp);
+			const selectedCacheObject = current?.cacheObject;
+			if (
+				current?.status === "selected" &&
+				(selectedCacheObject === undefined ||
+					!(await isValidArtworkCacheObject(
+						cacheRoot,
+						selectedCacheObject,
+					)))
+			) {
+				current = undefined;
+			}
 			if (current !== undefined) {
 				return { ...input, automaticArtwork: current };
 			}

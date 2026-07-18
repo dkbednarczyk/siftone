@@ -2,7 +2,7 @@ import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathWithinRoot,
-} from "../../path-utils";
+} from "../../util/path";
 import type { ImportState } from "../import-state";
 import { bigintRows } from "./database";
 import type { Entry } from "./types";

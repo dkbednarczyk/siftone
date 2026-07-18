@@ -97,6 +97,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 			cacheRoot: config.paths.cacheRoot,
 			versionRoot: config.paths.versionRoot,
 			versionRetentionHours: config.versionRetentionHours,
+			onWarning: console.warn,
 		});
 
 		console.info(`Observing source library at ${config.paths.watchRoot}.`);
