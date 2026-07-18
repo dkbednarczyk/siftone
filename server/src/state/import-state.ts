@@ -109,8 +109,15 @@ export function validateImportStateSchema(database: Database): void {
 	}
 }
 
-function openAndValidateSchema(path: string): Database {
+function openAndValidateSchema(
+	path: string,
+	onProgress?: (message: string) => void,
+): Database {
 	const existed = existsSync(path);
+	if (!existed) {
+		onProgress?.(`Creating library state database at ${path}.`);
+	}
+
 	const database = new Database(path, { create: true, strict: true });
 
 	try {
@@ -130,6 +137,10 @@ function openAndValidateSchema(path: string): Database {
 			throw new Error(
 				`SQLite quick_check failed: ${check?.quick_check ?? "no result"}`,
 			);
+		}
+
+		if (!existed) {
+			onProgress?.("Library state database is ready.");
 		}
 
 		return database;
@@ -157,10 +168,12 @@ export async function openImportState({
 	stateRoot,
 	generatedLibraryRoot,
 	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	onProgress,
 }: Readonly<{
 	stateRoot: string;
 	generatedLibraryRoot: string;
 	versionRoot?: string;
+	onProgress?: (message: string) => void;
 }>): Promise<ImportState> {
 	const databasePath = join(stateRoot, DATABASE_FILE);
 
@@ -174,7 +187,7 @@ export async function openImportState({
 		);
 	}
 
-	const database = openAndValidateSchema(databasePath);
+	const database = openAndValidateSchema(databasePath, onProgress);
 
 	return {
 		databasePath,

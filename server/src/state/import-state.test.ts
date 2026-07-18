@@ -162,6 +162,32 @@ describe("library state", () => {
 		expect(state.isDegraded()).toBe(true);
 		state.close();
 	});
+	test("reports creation of a new library state database", async () => {
+		const paths = await fixture();
+		const progress: string[] = [];
+		const databasePath = join(paths.state, DATABASE_FILE);
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+			onProgress: (message) => progress.push(message),
+		});
+		state.close();
+
+		expect(progress).toEqual([
+			`Creating library state database at ${databasePath}.`,
+			"Library state database is ready.",
+		]);
+
+		progress.length = 0;
+		const reopened = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+			onProgress: (message) => progress.push(message),
+		});
+		reopened.close();
+
+		expect(progress).toEqual([]);
+	});
 	test("rejects relative values in every persisted filesystem path column", async () => {
 		const paths = await fixture();
 		const state = await openImportState({

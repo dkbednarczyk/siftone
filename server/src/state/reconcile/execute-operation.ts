@@ -259,6 +259,10 @@ export async function executeOperation(
 	);
 	const prior = priorVersion(state, operation.import_id);
 
+	if (operation.kind !== "delete") {
+		await validateCacheEntries(entries, cacheRoot);
+	}
+
 	try {
 		if (operation.kind === "delete") {
 			if (prior === null) {
@@ -292,8 +296,6 @@ export async function executeOperation(
 
 			return;
 		}
-
-		await validateCacheEntries(entries, cacheRoot);
 
 		if (paths.version === null || operation.version_id === null) {
 			throw new Error("Publication operation has no version identity");

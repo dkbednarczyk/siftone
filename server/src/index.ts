@@ -71,10 +71,12 @@ async function runServer(config: ServerConfig): Promise<void> {
 	);
 
 	try {
+		console.info("Initializing library state.");
 		const importState = await openImportState({
 			stateRoot: config.paths.stateRoot,
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
 			versionRoot: config.paths.versionRoot,
+			onProgress: console.info,
 		});
 
 		state = importState;
@@ -82,6 +84,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 		importState.resetSourceObservationWindow();
 		await createDailyBackup(importState, config.paths.backupRoot);
 
+		console.info("Checking for interrupted publication operations.");
 		// Recovery is intentionally separate from normal reconciliation: it must not
 		// rescan every import or generated album before the source snapshot is prepared.
 		await recoverInterruptedOperations({
@@ -93,9 +96,13 @@ async function runServer(config: ServerConfig): Promise<void> {
 			versionRetentionHours: config.versionRetentionHours,
 		});
 
+		console.info(`Observing source library at ${config.paths.watchRoot}.`);
 		const startupObservation = await observeSource(config.paths.watchRoot);
 
 		if (!startupObservation.complete) {
+			console.info(
+				"Initial source observation is incomplete; reconciliation will retry at the next interval.",
+			);
 			importState.markReconciliationRequired(
 				`Incomplete startup source observation: ${startupObservation.issues[0] ?? "unknown issue"}`,
 			);
@@ -115,6 +122,9 @@ async function runServer(config: ServerConfig): Promise<void> {
 			}
 			importState.markReconciliationRequired(
 				"Source snapshot awaits interval-separated confirmation",
+			);
+			console.info(
+				`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
 			);
 		}
 
@@ -146,9 +156,15 @@ async function runServer(config: ServerConfig): Promise<void> {
 					importState.markReconciliationRequired(
 						"Source snapshot awaits interval-separated confirmation",
 					);
+					console.info(
+						"Source snapshot changed; waiting for the next interval to confirm it before importing.",
+					);
 					return;
 				}
 
+				console.info(
+					"Source snapshot confirmed; preparing publication plans.",
+				);
 				const reconciliationStartedAt = performance.now();
 				const next = await preparePublication(
 					config.paths.watchRoot,
@@ -161,6 +177,9 @@ async function runServer(config: ServerConfig): Promise<void> {
 					);
 				}
 
+				console.info(
+					`Prepared ${next.plans.length} desired import(s); resolving artwork and reconciling generated output.`,
+				);
 				const inputs = await resolvePublicationArtwork({
 					state: importState,
 					cacheRoot: config.paths.cacheRoot,
@@ -187,6 +206,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					inputs,
 					complete: true,
 					incompleteSourceContainers: next.incompleteSourceContainers,
+					onProgress: console.info,
 				});
 
 				console.info(

@@ -127,6 +127,7 @@ describe("reconciliation", () => {
 			stateRoot: paths.stateRoot,
 			generatedLibraryRoot: paths.generated,
 		});
+		const progress: string[] = [];
 		await reconcileImports({
 			state,
 			generatedLibraryRoot: paths.generated,
@@ -135,7 +136,13 @@ describe("reconciliation", () => {
 			watchRoot: paths.watchRoot,
 			inputs: [paths.input],
 			complete: true,
+			onProgress: (message) => progress.push(message),
 		});
+		expect(progress).toEqual([
+			"Building reconciliation state for 1 desired import(s).",
+			"Applying 1 publication operation(s): 1 add, 0 replace, 0 repair, 0 delete.",
+			"Applied 1 of 1 publication operation(s).",
+		]);
 		expect((await lstat(paths.destination)).isSymbolicLink()).toBe(true);
 		expect(await readlink(paths.destination)).toBe(paths.source);
 		expect(
@@ -623,6 +630,13 @@ describe("reconciliation", () => {
 				.query<{ phase: string }, []>("SELECT phase FROM operations")
 				.get()?.phase,
 		).toBe("staged");
+		expect(
+			state.database
+				.query<{ n: number }, [string]>(
+					"SELECT count(*) AS n FROM reviews WHERE operation_id = ?",
+				)
+				.get(operation.id)?.n,
+		).toBe(0);
 		await expect(lstat(paths.destination)).rejects.toThrow("ENOENT");
 		state.close();
 	});

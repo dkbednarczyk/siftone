@@ -24,7 +24,7 @@ is_running() {
 }
 
 port_in_use() {
-	ss -H -ltn "sport = :$listen_port" | grep -q .
+	lsof -nP -iTCP:"$listen_port" -sTCP:LISTEN >/dev/null 2>&1
 }
 
 subsonic_request() {

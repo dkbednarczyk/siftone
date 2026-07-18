@@ -6,9 +6,8 @@ Siftone's generated library, never the immutable source watch root.
 ## Prerequisites
 
 This setup was validated with Gonic `v0.22.0`. The helper also requires
-`bash`, `curl`, `jq`, `sqlite3`, and `ss` (from `iproute2`). Install Gonic
-separately; it is not a Bun dependency. On startup, the helper checks the
-listener with `ss`.
+`bash`, `curl`, `jq`, `sqlite3`, and `lsof`. Install Gonic separately; it is
+not a Bun dependency. On startup, the helper checks the listener with `lsof`.
 
 ## Configuration and runtime data
 

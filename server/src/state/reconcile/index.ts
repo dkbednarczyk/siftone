@@ -86,6 +86,7 @@ export async function reconcileImports({
 	complete,
 	incompleteSourceContainers = [],
 	observedSourceContainers = [],
+	onProgress,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
@@ -98,7 +99,12 @@ export async function reconcileImports({
 	complete: boolean;
 	incompleteSourceContainers?: readonly string[];
 	observedSourceContainers?: readonly string[];
+	onProgress?: (message: string) => void;
 }>): Promise<void> {
+	onProgress?.(
+		`Building reconciliation state for ${inputs.length} desired import(s).`,
+	);
+
 	await mkdir(versionRoot, { recursive: true });
 	await ensurePublicationRoots(
 		generatedLibraryRoot,
@@ -294,7 +300,28 @@ export async function reconcileImports({
 			);
 		}
 	}
-	for (const operation of scheduled) {
+	const additions = scheduled.filter(
+		(operation) => operation.kind === "add",
+	).length;
+	const replacements = scheduled.filter(
+		(operation) => operation.kind === "replace",
+	).length;
+	const repairs = scheduled.filter(
+		(operation) => operation.kind === "repair",
+	).length;
+	const deletions = scheduled.filter(
+		(operation) => operation.kind === "delete",
+	).length;
+
+	if (scheduled.length === 0) {
+		onProgress?.("No publication operations are needed.");
+	} else {
+		onProgress?.(
+			`Applying ${scheduled.length} publication operation(s): ${additions} add, ${replacements} replace, ${repairs} repair, ${deletions} delete.`,
+		);
+	}
+
+	for (const [index, operation] of scheduled.entries()) {
 		await executeOperation(
 			state,
 			generatedLibraryRoot,
@@ -303,6 +330,13 @@ export async function reconcileImports({
 			cacheRoot,
 			operation,
 		);
+
+		const completed = index + 1;
+		if (completed % 25 === 0 || completed === scheduled.length) {
+			onProgress?.(
+				`Applied ${completed} of ${scheduled.length} publication operation(s).`,
+			);
+		}
 	}
 	await collectRetiredVersions(
 		state,

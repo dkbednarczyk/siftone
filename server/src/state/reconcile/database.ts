@@ -4,6 +4,7 @@ export const nowNs = (): bigint => BigInt(Date.now()) * 1_000_000n;
 
 export function immediate<T>(state: ImportState, work: () => T): T {
 	state.database.run("BEGIN IMMEDIATE");
+	
 	try {
 		const result = work();
 		state.database.run("COMMIT");
