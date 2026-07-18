@@ -44,7 +44,9 @@ async function readUntil(
 					timeout = setTimeout(
 						() =>
 							reject(
-								new Error(`Timed out waiting for: ${expected}`),
+								new Error(
+									`Timed out waiting for: ${expected}\n${output}`,
+								),
 							),
 						remainingMs,
 					);
@@ -207,6 +209,61 @@ describe("server command", () => {
 			expect(output).not.toContain(
 				"No existing library state; starting the first complete library build immediately.",
 			);
+		} finally {
+			if (child?.exitCode === null) {
+				child.kill();
+				await child.exited;
+			}
+
+			await rm(root, { force: true, recursive: true });
+		}
+	});
+
+	test("skips the next unchanged observation after the first library build", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-startup-"));
+		const watchRoot = join(root, "watch");
+		const generatedLibraryRoot = join(root, "generated");
+		const cacheRoot = join(root, "cache");
+		const stagingRoot = join(root, "staging");
+		const stateRoot = join(root, "state");
+		const backupRoot = join(root, "backups");
+		await mkdir(watchRoot);
+
+		const listener = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => new Response(),
+		});
+		const port = listener.port;
+		listener.stop(true);
+
+		const configPath = join(root, "config.toml");
+		let child: ReturnType<typeof Bun.spawn> | undefined;
+
+		try {
+			await writeFile(
+				configPath,
+				`[server]\nport = ${port}\nreconciliation_interval_seconds = 1\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\ncache_root = ${JSON.stringify(cacheRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+			);
+
+			child = Bun.spawn(
+				[
+					process.execPath,
+					join(import.meta.dir, "index.ts"),
+					"--config",
+					configPath,
+				],
+				{ stderr: "pipe", stdout: "pipe" },
+			);
+			const output = await readUntil(
+				child.stdout,
+				"Source snapshot is unchanged; skipping publication preparation.",
+				2_000,
+			);
+			expect(output).toContain(
+				"Starting the first complete library build without interval-separated confirmation.",
+			);
+			expect(output).toContain("to reconcile 0 desired import(s)");
 		} finally {
 			if (child?.exitCode === null) {
 				child.kill();

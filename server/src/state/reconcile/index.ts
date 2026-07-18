@@ -74,6 +74,50 @@ export async function recoverInterruptedOperations({
 	);
 }
 
+export async function hasPublishedOutputDrift({
+	state,
+	cacheRoot,
+	versionRoot,
+}: Readonly<{
+	state: ImportState;
+	cacheRoot: string;
+	versionRoot: string;
+}>): Promise<boolean> {
+	const published = state.database
+		.query<
+			{
+				import_id: string;
+				destination_path: string | null;
+				version_path: string | null;
+			},
+			[]
+		>(
+			"SELECT i.id AS import_id, pd.destination_path, av.version_path FROM imports i LEFT JOIN published_destinations pd ON pd.import_id = i.id LEFT JOIN album_versions av ON av.id = pd.version_id",
+		)
+		.all();
+
+	for (const publication of published) {
+		if (
+			publication.destination_path === null ||
+			publication.version_path === null ||
+			!(await isOwnedPublicLeaf(
+				publication.destination_path,
+				publication.version_path,
+				versionRoot,
+			)) ||
+			!(await entriesMatch(
+				publication.version_path,
+				destinationEntries(state, publication.import_id),
+				cacheRoot,
+			))
+		) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 export async function reconcileImports({
 	state,
 	generatedLibraryRoot,

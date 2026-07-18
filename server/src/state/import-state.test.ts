@@ -214,6 +214,94 @@ describe("library state", () => {
 		expect(afterFirstScan.isTabulaRasa).toBe(false);
 		afterFirstScan.close();
 	});
+	test("distinguishes new and unchanged confirmed source manifests", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		const firstManifest = "a".repeat(64);
+		const secondManifest = "b".repeat(64);
+
+		expect(
+			state.observeSourceManifest({
+				watchRoot: containerPath,
+				manifestHash: firstManifest,
+				minimumAgeMs: 0,
+			}),
+		).toEqual({ confirmed: false, unchanged: false });
+		expect(
+			state.observeSourceManifest({
+				watchRoot: containerPath,
+				manifestHash: firstManifest,
+				minimumAgeMs: 0,
+			}),
+		).toEqual({ confirmed: true, unchanged: false });
+		expect(
+			state.observeSourceManifest({
+				watchRoot: containerPath,
+				manifestHash: firstManifest,
+				minimumAgeMs: 0,
+			}),
+		).toEqual({ confirmed: true, unchanged: true });
+		expect(
+			state.observeSourceManifest({
+				watchRoot: containerPath,
+				manifestHash: secondManifest,
+				minimumAgeMs: 0,
+			}),
+		).toEqual({ confirmed: false, unchanged: false });
+		state.close();
+	});
+	test("reports pending reconciliation and due artwork work", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		state.database.run(
+			"UPDATE reconciliation_state SET required = 0 WHERE id = 1",
+		);
+		expect(state.isReconciliationRequired()).toBe(false);
+		state.markReconciliationRequired();
+		expect(state.isReconciliationRequired()).toBe(true);
+		state.database.run(
+			"UPDATE reconciliation_state SET required = 0 WHERE id = 1",
+		);
+		seed(state);
+		state.database.run(
+			"INSERT INTO operations VALUES (?, ?, ?, 'repair', 'planned', ?, ?, NULL, NULL, NULL, 1, 1)",
+			[ids[4], ids[2], ids[1], destinationPath, stagingPath],
+		);
+		expect(state.isReconciliationRequired()).toBe(true);
+		state.database.run("DELETE FROM operations WHERE id = ?", [ids[4]]);
+		insertAutomaticArtwork(state, ids[1], "transient_failure", null);
+		state.database.run(
+			"UPDATE automatic_artwork SET next_attempt_at_ns = 1 WHERE source_release_id = ?",
+			[ids[1]],
+		);
+		expect(state.hasPendingAutomaticArtwork(false, "resolver-v1")).toBe(
+			true,
+		);
+		state.database.run(
+			"UPDATE automatic_artwork SET status = 'disabled', next_attempt_at_ns = NULL WHERE source_release_id = ?",
+			[ids[1]],
+		);
+		expect(state.hasPendingAutomaticArtwork(false, "resolver-v1")).toBe(
+			false,
+		);
+		expect(state.hasPendingAutomaticArtwork(true, "resolver-v1")).toBe(
+			true,
+		);
+		state.database.run(
+			"UPDATE automatic_artwork SET status = 'no_match', resolver_version = 'old-resolver' WHERE source_release_id = ?",
+			[ids[1]],
+		);
+		expect(state.hasPendingAutomaticArtwork(false, "resolver-v1")).toBe(
+			true,
+		);
+		state.close();
+	});
 	test("rejects relative values in every persisted filesystem path column", async () => {
 		const paths = await fixture();
 		const state = await openImportState({

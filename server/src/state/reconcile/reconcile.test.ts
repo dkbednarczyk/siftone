@@ -15,7 +15,11 @@ import { resolvePublicationArtwork } from "../../musicbrainz/publication";
 import type { PublicationInput } from "../../publication/publish";
 import { openImportState } from "../import-state";
 import { desiredFor, manifestHash } from "../publication-snapshot";
-import { reconcileImports, recoverInterruptedOperations } from "./index";
+import {
+	hasPublishedOutputDrift,
+	reconcileImports,
+	recoverInterruptedOperations,
+} from "./index";
 import { destinationEntries } from "./operation-entries";
 import { createOperation } from "./operation-store";
 import type { Desired } from "./types";
@@ -217,6 +221,40 @@ describe("reconciliation", () => {
 		).toBe("present");
 		state.close();
 	});
+	test("detects missing generated output before skipping reconciliation", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.stateRoot,
+			generatedLibraryRoot: paths.generated,
+		});
+		await reconcileImports({
+			state,
+			generatedLibraryRoot: paths.generated,
+			stagingRoot: paths.staging,
+			cacheRoot: paths.cache,
+			watchRoot: paths.watchRoot,
+			inputs: [paths.input],
+			complete: true,
+		});
+		const versionRoot = join(paths.generated, ".siftone", "versions");
+		expect(
+			await hasPublishedOutputDrift({
+				state,
+				cacheRoot: paths.cache,
+				versionRoot,
+			}),
+		).toBe(false);
+		await rm(paths.destination);
+		expect(
+			await hasPublishedOutputDrift({
+				state,
+				cacheRoot: paths.cache,
+				versionRoot,
+			}),
+		).toBe(true);
+		state.close();
+	});
+
 	test("replaces an album by atomically switching its public leaf to a retained version", async () => {
 		const paths = await fixture();
 		const state = await openImportState({

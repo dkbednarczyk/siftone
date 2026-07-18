@@ -20,6 +20,24 @@ describe("source observer", () => {
 			expect(second.containers[0].manifestHash).not.toBe(
 				first.containers[0].manifestHash,
 			);
+			expect(second.manifestHash).not.toBe(first.manifestHash);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test("changes its aggregate manifest when a source container is removed", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-observer-"));
+		try {
+			const album = join(root, "Album");
+			await mkdir(album);
+			await writeFile(join(album, "01.flac"), "audio");
+			const first = await observeSource(root);
+			await rm(album, { force: true, recursive: true });
+			const second = await observeSource(root);
+
+			expect(first.manifestHash).not.toBe(second.manifestHash);
+			expect(second.containers).toEqual([]);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}

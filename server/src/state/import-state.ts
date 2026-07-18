@@ -20,12 +20,22 @@ export type ImportOperationPhase =
 	| "swapped"
 	| "attention_required";
 
+export type SourceManifestObservation = Readonly<{
+	confirmed: boolean;
+	unchanged: boolean;
+}>;
+
 export type ImportState = Readonly<{
 	databasePath: string;
 	database: Database;
 	isTabulaRasa: boolean;
 	close(): void;
 	isDegraded(): boolean;
+	isReconciliationRequired(): boolean;
+	hasPendingAutomaticArtwork(
+		automaticArtworkEnabled: boolean,
+		resolverVersion: string,
+	): boolean;
 	assertKnownExistingDestinations(
 		inputs: readonly PublicationInput[],
 	): Promise<void>;
@@ -37,7 +47,7 @@ export type ImportState = Readonly<{
 			manifestHash: string;
 			minimumAgeMs: number;
 		}>,
-	): boolean;
+	): SourceManifestObservation;
 }>;
 
 const SOURCE_OBSERVATION_QUERY =
@@ -223,9 +233,11 @@ export async function openImportState({
 				},
 				[string]
 			>(database.query(SOURCE_OBSERVATION_QUERY), watchRoot);
+			const unchanged =
+				existing?.confirmed_manifest_hash === manifestHash;
 			const minimumAgeNs = BigInt(minimumAgeMs) * 1_000_000n;
 			const confirmed =
-				existing?.confirmed_manifest_hash === manifestHash ||
+				unchanged ||
 				(existing?.pending_manifest_hash === manifestHash &&
 					existing.pending_since_ns !== null &&
 					now - existing.pending_since_ns >= minimumAgeNs);
@@ -245,7 +257,7 @@ export async function openImportState({
 				]);
 			}
 
-			return confirmed;
+			return { confirmed, unchanged };
 		},
 		assertKnownExistingDestinations: async (inputs) => {
 			for (const input of inputs) {
@@ -283,5 +295,24 @@ export async function openImportState({
 					"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') OR EXISTS(SELECT 1 FROM reviews WHERE kind = 'attention_required') OR EXISTS(SELECT 1 FROM reconciliation_state WHERE id = 1 AND required = 1) AS degraded",
 				)
 				.get()?.degraded === 1,
+		isReconciliationRequired: () =>
+			database
+				.query<{ required: number }, []>(
+					"SELECT required OR EXISTS(SELECT 1 FROM operations) OR EXISTS(SELECT 1 FROM reviews WHERE kind = 'attention_required') AS required FROM reconciliation_state WHERE id = 1",
+				)
+				.get()?.required === 1,
+		hasPendingAutomaticArtwork: (
+			automaticArtworkEnabled,
+			resolverVersion,
+		) =>
+			database
+				.query<{ pending: number }, [number, string, bigint]>(
+					"SELECT EXISTS(SELECT 1 FROM automatic_artwork WHERE (status = 'disabled' AND ?) OR resolver_version <> ? OR (status = 'transient_failure' AND next_attempt_at_ns IS NOT NULL AND next_attempt_at_ns <= ?) OR (status = 'selected' AND (cache_sha256 IS NULL OR NOT EXISTS(SELECT 1 FROM artwork_cache_objects WHERE sha256 = automatic_artwork.cache_sha256)))) AS pending",
+				)
+				.get(
+					automaticArtworkEnabled ? 1 : 0,
+					resolverVersion,
+					BigInt(Date.now()) * 1_000_000n,
+				)?.pending === 1,
 	};
 }

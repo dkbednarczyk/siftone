@@ -4,6 +4,7 @@ import prettyMilliseconds from "pretty-ms";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
 import {
+	AUTOMATIC_ARTWORK_RESOLVER_VERSION,
 	createAutomaticArtworkResolver,
 	resolvePublicationArtwork,
 } from "./musicbrainz/publication";
@@ -15,9 +16,11 @@ import {
 	openImportState,
 } from "./state/import-state";
 import {
+	hasPublishedOutputDrift,
 	reconcileImports,
 	recoverInterruptedOperations,
 } from "./state/reconcile";
+import { collectRetiredVersions } from "./state/reconcile/version-gc";
 import { observeSource } from "./state/source-observer";
 import {
 	type ReconciliationScheduler,
@@ -108,19 +111,11 @@ async function runServer(config: ServerConfig): Promise<void> {
 				`Incomplete startup source observation: ${startupObservation.issues[0] ?? "unknown issue"}`,
 			);
 		} else {
-			for (const container of startupObservation.containers) {
-				if (
-					container.manifestHash !== undefined &&
-					container.outcome === "present"
-				) {
-					importState.observeSourceManifest({
-						watchRoot: container.containerPath,
-						manifestHash: container.manifestHash,
-						minimumAgeMs:
-							config.reconciliationIntervalSeconds * 1_000,
-					});
-				}
-			}
+			const startupManifest = importState.observeSourceManifest({
+				watchRoot: config.paths.watchRoot,
+				manifestHash: startupObservation.manifestHash,
+				minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
+			});
 			bypassInitialConfirmation = importState.isTabulaRasa;
 			if (bypassInitialConfirmation) {
 				importState.markReconciliationRequired(
@@ -128,6 +123,18 @@ async function runServer(config: ServerConfig): Promise<void> {
 				);
 				console.info(
 					"No existing library state; starting the first complete library build immediately.",
+				);
+			} else if (
+				startupManifest.confirmed &&
+				startupManifest.unchanged &&
+				!importState.isReconciliationRequired() &&
+				!importState.hasPendingAutomaticArtwork(
+					automaticArtworkEnabled,
+					AUTOMATIC_ARTWORK_RESOLVER_VERSION,
+				)
+			) {
+				console.info(
+					"Source snapshot is unchanged; no reconciliation work is pending.",
 				);
 			} else {
 				importState.markReconciliationRequired(
@@ -139,10 +146,16 @@ async function runServer(config: ServerConfig): Promise<void> {
 			}
 		}
 
+		let reusableObservation = bypassInitialConfirmation
+			? startupObservation
+			: undefined;
 		const sourceWatcher = startSourceWatcher({
 			intervalMs: config.reconciliationIntervalSeconds * 1_000,
 			onReconcile: async () => {
-				const observation = await observeSource(config.paths.watchRoot);
+				const observation =
+					reusableObservation ??
+					(await observeSource(config.paths.watchRoot));
+				reusableObservation = undefined;
 				if (!observation.complete) {
 					importState.markReconciliationRequired(
 						`Incomplete periodic source observation: ${observation.issues[0] ?? "unknown issue"}`,
@@ -150,20 +163,12 @@ async function runServer(config: ServerConfig): Promise<void> {
 					return;
 				}
 
-				const confirmations = observation.containers.map((container) =>
-					container.outcome === "present" &&
-					container.manifestHash !== undefined
-						? importState.observeSourceManifest({
-								watchRoot: container.containerPath,
-								manifestHash: container.manifestHash,
-								minimumAgeMs:
-									config.reconciliationIntervalSeconds *
-									1_000,
-							})
-						: false,
-				);
-				const confirmed = confirmations.every(Boolean);
-				if (!confirmed && !bypassInitialConfirmation) {
+				const sourceManifest = importState.observeSourceManifest({
+					watchRoot: config.paths.watchRoot,
+					manifestHash: observation.manifestHash,
+					minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
+				});
+				if (!sourceManifest.confirmed && !bypassInitialConfirmation) {
 					importState.markReconciliationRequired(
 						"Source snapshot awaits interval-separated confirmation",
 					);
@@ -173,12 +178,47 @@ async function runServer(config: ServerConfig): Promise<void> {
 					return;
 				}
 
-				if (bypassInitialConfirmation) {
+				const startingFirstBuild = bypassInitialConfirmation;
+				if (startingFirstBuild) {
+					importState.observeSourceManifest({
+						watchRoot: config.paths.watchRoot,
+						manifestHash: observation.manifestHash,
+						minimumAgeMs: 0,
+					});
 					bypassInitialConfirmation = false;
 					console.info(
 						"Starting the first complete library build without interval-separated confirmation.",
 					);
-				} else {
+				}
+
+				if (
+					!startingFirstBuild &&
+					sourceManifest.unchanged &&
+					!importState.isReconciliationRequired() &&
+					!importState.hasPendingAutomaticArtwork(
+						automaticArtworkEnabled,
+						AUTOMATIC_ARTWORK_RESOLVER_VERSION,
+					) &&
+					!(await hasPublishedOutputDrift({
+						state: importState,
+						cacheRoot: config.paths.cacheRoot,
+						versionRoot: config.paths.versionRoot,
+					}))
+				) {
+					console.info(
+						"Source snapshot is unchanged; skipping publication preparation.",
+					);
+					await collectRetiredVersions(
+						importState,
+						config.paths.generatedLibraryRoot,
+						config.paths.versionRoot,
+						config.versionRetentionHours,
+					);
+
+					return;
+				}
+
+				if (!startingFirstBuild) {
 					console.info(
 						"Source snapshot confirmed; preparing publication plans.",
 					);
