@@ -98,6 +98,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 
 		console.info(`Observing source library at ${config.paths.watchRoot}.`);
 		const startupObservation = await observeSource(config.paths.watchRoot);
+		let bypassInitialConfirmation = false;
 
 		if (!startupObservation.complete) {
 			console.info(
@@ -120,12 +121,22 @@ async function runServer(config: ServerConfig): Promise<void> {
 					});
 				}
 			}
-			importState.markReconciliationRequired(
-				"Source snapshot awaits interval-separated confirmation",
-			);
-			console.info(
-				`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
-			);
+			bypassInitialConfirmation = importState.isTabulaRasa;
+			if (bypassInitialConfirmation) {
+				importState.markReconciliationRequired(
+					"Initial library import is starting without interval-separated confirmation",
+				);
+				console.info(
+					"No existing library state; starting the first complete library build immediately.",
+				);
+			} else {
+				importState.markReconciliationRequired(
+					"Source snapshot awaits interval-separated confirmation",
+				);
+				console.info(
+					`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
+				);
+			}
 		}
 
 		const sourceWatcher = startSourceWatcher({
@@ -152,7 +163,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 						: false,
 				);
 				const confirmed = confirmations.every(Boolean);
-				if (!confirmed) {
+				if (!confirmed && !bypassInitialConfirmation) {
 					importState.markReconciliationRequired(
 						"Source snapshot awaits interval-separated confirmation",
 					);
@@ -162,9 +173,16 @@ async function runServer(config: ServerConfig): Promise<void> {
 					return;
 				}
 
-				console.info(
-					"Source snapshot confirmed; preparing publication plans.",
-				);
+				if (bypassInitialConfirmation) {
+					bypassInitialConfirmation = false;
+					console.info(
+						"Starting the first complete library build without interval-separated confirmation.",
+					);
+				} else {
+					console.info(
+						"Source snapshot confirmed; preparing publication plans.",
+					);
+				}
 				const reconciliationStartedAt = performance.now();
 				const next = await preparePublication(
 					config.paths.watchRoot,
@@ -218,7 +236,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 							),
 						),
 						{ separateMilliseconds: true },
-					)} to reconcile ${inputs.length} desired import(s) from periodic source scan.`,
+					)} to reconcile ${inputs.length} desired import(s) from complete source scan.`,
 				);
 			},
 			onFailure: (error) =>
@@ -228,6 +246,9 @@ async function runServer(config: ServerConfig): Promise<void> {
 		});
 
 		watcher = sourceWatcher;
+		if (bypassInitialConfirmation) {
+			sourceWatcher.request();
+		}
 		ready = true;
 	} catch (error) {
 		if (watcher !== undefined) {

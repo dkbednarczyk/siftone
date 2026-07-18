@@ -23,6 +23,7 @@ export type ImportOperationPhase =
 export type ImportState = Readonly<{
 	databasePath: string;
 	database: Database;
+	isTabulaRasa: boolean;
 	close(): void;
 	isDegraded(): boolean;
 	assertKnownExistingDestinations(
@@ -188,10 +189,17 @@ export async function openImportState({
 	}
 
 	const database = openAndValidateSchema(databasePath, onProgress);
+	const isTabulaRasa =
+		database
+			.query<{ is_tabula_rasa: number }, []>(
+				"SELECT NOT EXISTS(SELECT 1 FROM imports) AND NOT EXISTS(SELECT 1 FROM operations) AND (SELECT last_full_scan_at_ns FROM reconciliation_state WHERE id = 1) IS NULL AS is_tabula_rasa",
+			)
+			.get()?.is_tabula_rasa === 1;
 
 	return {
 		databasePath,
 		database,
+		isTabulaRasa,
 		close: () => database.close(),
 		markReconciliationRequired: (error?: string) => {
 			database.run(

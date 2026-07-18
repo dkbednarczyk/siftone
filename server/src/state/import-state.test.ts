@@ -188,6 +188,32 @@ describe("library state", () => {
 
 		expect(progress).toEqual([]);
 	});
+	test("identifies tabula rasa state until the first full scan", async () => {
+		const paths = await fixture();
+		const state = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		expect(state.isTabulaRasa).toBe(true);
+		state.close();
+
+		const reopened = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		expect(reopened.isTabulaRasa).toBe(true);
+		reopened.database.run(
+			"UPDATE reconciliation_state SET last_full_scan_at_ns = 1 WHERE id = 1",
+		);
+		reopened.close();
+
+		const afterFirstScan = await openImportState({
+			stateRoot: paths.state,
+			generatedLibraryRoot: paths.generated,
+		});
+		expect(afterFirstScan.isTabulaRasa).toBe(false);
+		afterFirstScan.close();
+	});
 	test("rejects relative values in every persisted filesystem path column", async () => {
 		const paths = await fixture();
 		const state = await openImportState({
