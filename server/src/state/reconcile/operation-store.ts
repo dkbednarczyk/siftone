@@ -6,13 +6,10 @@ import type { Desired, OperationRow, SourceEntry } from "./types";
 
 export type Existing = {
 	import_id: string;
-	release_id: string;
 	destination_path: string | null;
-	version_id: string | null;
 	version_path: string | null;
 	manifest_hash: string;
-	container_availability: "present" | "missing" | "inaccessible";
-	release_availability: "present" | "missing" | "inaccessible";
+	availability: "present" | "missing";
 };
 
 export function existingFor(
@@ -22,35 +19,28 @@ export function existingFor(
 ): Existing | null {
 	return state.database
 		.query<Existing, [string, string]>(`
-		SELECT i.id AS import_id, sr.id AS release_id, pd.destination_path, pd.version_id, av.version_path, i.manifest_hash, sc.availability AS container_availability, sr.availability AS release_availability
-		FROM source_releases sr JOIN source_containers sc ON sc.id = sr.container_id
-		LEFT JOIN imports i ON i.source_release_id = sr.id
-		LEFT JOIN published_destinations pd ON pd.import_id = i.id
-		LEFT JOIN album_versions av ON av.id = pd.version_id
-		WHERE sc.root_path = ? AND sr.logical_release_key = ?
+		SELECT i.id AS import_id, i.destination_path, av.version_path, i.manifest_hash, i.availability
+		FROM imports i
+		JOIN source_containers sc ON sc.id = i.container_id
+		LEFT JOIN album_versions av ON av.id = i.current_version_id
+		WHERE sc.root_path = ? AND i.logical_release_key = ?
 	`)
 		.get(containerPath, logicalKey);
 }
 
 function insertOrUpdateSourceFiles(
 	state: ImportState,
-	releaseId: string,
+	importId: string,
 	entries: readonly SourceEntry[],
 ): void {
 	for (const entry of entries) {
 		state.database.run(
 			`
-		INSERT INTO source_files (source_path, source_release_id, size, mtime_ns, kind)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(source_path) DO UPDATE SET source_release_id = excluded.source_release_id, size = excluded.size, mtime_ns = excluded.mtime_ns, kind = excluded.kind
+		INSERT INTO source_files (source_path, import_id)
+		VALUES (?, ?)
+		ON CONFLICT(source_path) DO UPDATE SET import_id = excluded.import_id
 	`,
-			[
-				entry.sourcePath,
-				releaseId,
-				entry.size,
-				entry.mtimeNs,
-				entry.kind,
-			],
+			[entry.sourcePath, importId],
 		);
 	}
 }
@@ -71,7 +61,6 @@ export function createOperation(
 	const newDesired = desired;
 	const id = randomUUID();
 
-	const releaseId = existing?.release_id ?? randomUUID();
 	const importId = existing?.import_id ?? randomUUID();
 
 	const target = desired?.destinationPath ?? oldDestination;
@@ -99,72 +88,48 @@ export function createOperation(
 			if (container === null) {
 				container = { id: randomUUID() };
 				state.database.run(
-					"INSERT INTO source_containers (id, root_path, availability, missing_since_ns, updated_at_ns) VALUES (?, ?, 'present', NULL, ?)",
-					[container.id, newDesired.containerPath, timestamp],
+					"INSERT INTO source_containers (id, root_path) VALUES (?, ?)",
+					[container.id, newDesired.containerPath],
 				);
 			}
 
 			state.database.run(
-				"INSERT INTO source_releases (id, container_id, logical_release_key, album_artist, album_title) VALUES (?, ?, ?, ?, ?)",
-				[
-					releaseId,
-					container.id,
-					newDesired.input.logicalReleaseKey,
-					newDesired.input.albumArtist,
-					newDesired.input.albumTitle,
-				],
-			);
-
-			state.database.run(
-				"INSERT INTO imports (id, source_release_id, manifest_hash, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?)",
+				"INSERT INTO imports (id, container_id, logical_release_key, manifest_hash, availability, destination_path, current_version_id) VALUES (?, ?, ?, ?, 'present', NULL, NULL)",
 				[
 					importId,
-					releaseId,
+					container.id,
+					newDesired.input.logicalReleaseKey,
 					newDesired.manifestHash,
-					timestamp,
-					timestamp,
 				],
 			);
 		} else if (desired !== undefined) {
 			state.database.run(
-				"UPDATE source_containers SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = (SELECT container_id FROM source_releases WHERE id = ?)",
-				[timestamp, releaseId],
-			);
-
-			state.database.run(
-				"UPDATE source_releases SET album_artist = ?, album_title = ?, availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = ?",
-				[
-					desired.input.albumArtist,
-					desired.input.albumTitle,
-					timestamp,
-					releaseId,
-				],
+				"UPDATE imports SET availability = 'present' WHERE id = ?",
+				[importId],
 			);
 		}
 
 		if (desired !== undefined) {
-			insertOrUpdateSourceFiles(state, releaseId, desired.entries);
+			insertOrUpdateSourceFiles(state, importId, desired.entries);
 		}
 
 		if (versionId !== null && versionPath !== null) {
 			state.database.run(
-				"INSERT INTO album_versions (id, import_id, origin_operation_id, version_path, state, published_at_ns, retired_at_ns) VALUES (?, ?, ?, ?, 'pending', NULL, NULL)",
-				[versionId, importId, id, versionPath],
+				"INSERT INTO album_versions (id, origin_operation_id, version_path, state, retired_at_ns) VALUES (?, ?, ?, 'pending', NULL)",
+				[versionId, id, versionPath],
 			);
 		}
 
 		state.database.run(
-			"INSERT INTO operations (id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, version_id, version_path, error_message, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, NULL, ?, ?)",
+			"INSERT INTO operations (id, import_id, kind, phase, target_destination_path, staging_path, version_id, version_path, error_message, created_at_ns) VALUES (?, ?, ?, 'planned', ?, ?, ?, ?, NULL, ?)",
 			[
 				id,
 				importId,
-				releaseId,
 				kind,
 				target,
 				join(stagingRoot, `operation-${id}`),
 				versionId,
 				versionPath,
-				timestamp,
 				timestamp,
 			],
 		);
@@ -200,7 +165,6 @@ export function createOperation(
 	return {
 		id,
 		import_id: importId,
-		source_release_id: releaseId,
 		kind,
 		phase: "planned",
 		target_destination_path: target,

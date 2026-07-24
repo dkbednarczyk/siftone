@@ -27,7 +27,7 @@ export type ImportState = Readonly<{
 	close(): void;
 	isDegraded(): boolean;
 	isReconciliationRequired(): boolean;
-	markReconciliationRequired(error?: string): void;
+	markReconciliationRequired(): void;
 	resetSourceObservationWindow(): void;
 	observeSourceManifest(
 		options: Readonly<{
@@ -41,9 +41,9 @@ export type ImportState = Readonly<{
 const SOURCE_OBSERVATION_QUERY =
 	"SELECT confirmed_manifest_hash, pending_manifest_hash, pending_since_ns FROM source_observations WHERE root_path = ?";
 const UPSERT_CONFIRMED_SOURCE_OBSERVATION =
-	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns, updated_at_ns) VALUES (?, ?, NULL, NULL, ?) ON CONFLICT(root_path) DO UPDATE SET confirmed_manifest_hash = excluded.confirmed_manifest_hash, pending_manifest_hash = NULL, pending_since_ns = NULL, updated_at_ns = excluded.updated_at_ns";
+	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns) VALUES (?, ?, NULL, NULL) ON CONFLICT(root_path) DO UPDATE SET confirmed_manifest_hash = excluded.confirmed_manifest_hash, pending_manifest_hash = NULL, pending_since_ns = NULL";
 const UPSERT_PENDING_SOURCE_OBSERVATION =
-	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns, updated_at_ns) VALUES (?, NULL, ?, ?, ?) ON CONFLICT(root_path) DO UPDATE SET pending_manifest_hash = excluded.pending_manifest_hash, pending_since_ns = excluded.pending_since_ns, updated_at_ns = excluded.updated_at_ns";
+	"INSERT INTO source_observations (root_path, confirmed_manifest_hash, pending_manifest_hash, pending_since_ns) VALUES (?, NULL, ?, ?) ON CONFLICT(root_path) DO UPDATE SET pending_manifest_hash = excluded.pending_manifest_hash, pending_since_ns = excluded.pending_since_ns";
 
 function configure(database: Database): void {
 	database.run("PRAGMA foreign_keys = ON");
@@ -199,16 +199,14 @@ export async function openImportState({
 		database,
 		isTabulaRasa,
 		close: () => database.close(),
-		markReconciliationRequired: (error?: string) => {
+		markReconciliationRequired: () => {
 			database.run(
-				"UPDATE reconciliation_state SET required = 1, last_error = ?, updated_at_ns = ? WHERE id = 1",
-				[error ?? null, BigInt(Date.now()) * 1_000_000n],
+				"UPDATE reconciliation_state SET required = 1 WHERE id = 1",
 			);
 		},
 		resetSourceObservationWindow: () => {
 			database.run(
-				"UPDATE source_observations SET pending_manifest_hash = NULL, pending_since_ns = NULL, updated_at_ns = ?",
-				[BigInt(Date.now()) * 1_000_000n],
+				"UPDATE source_observations SET pending_manifest_hash = NULL, pending_since_ns = NULL",
 			);
 		},
 		observeSourceManifest: ({ watchRoot, manifestHash, minimumAgeMs }) => {
@@ -234,13 +232,11 @@ export async function openImportState({
 				database.run(UPSERT_CONFIRMED_SOURCE_OBSERVATION, [
 					watchRoot,
 					manifestHash,
-					now,
 				]);
 			} else if (existing?.pending_manifest_hash !== manifestHash) {
 				database.run(UPSERT_PENDING_SOURCE_OBSERVATION, [
 					watchRoot,
 					manifestHash,
-					now,
 					now,
 				]);
 			}
@@ -250,13 +246,13 @@ export async function openImportState({
 		isDegraded: () =>
 			database
 				.query<{ degraded: number }, []>(
-					"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') OR EXISTS(SELECT 1 FROM reviews WHERE kind = 'attention_required') OR EXISTS(SELECT 1 FROM reconciliation_state WHERE id = 1 AND required = 1) AS degraded",
+					"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') OR EXISTS(SELECT 1 FROM reconciliation_state WHERE id = 1 AND required = 1) AS degraded",
 				)
 				.get()?.degraded === 1,
 		isReconciliationRequired: () =>
 			database
 				.query<{ required: number }, []>(
-					"SELECT required OR EXISTS(SELECT 1 FROM operations) OR EXISTS(SELECT 1 FROM reviews WHERE kind = 'attention_required') AS required FROM reconciliation_state WHERE id = 1",
+					"SELECT required OR EXISTS(SELECT 1 FROM operations) AS required FROM reconciliation_state WHERE id = 1",
 				)
 				.get()?.required === 1,
 	};

@@ -25,7 +25,6 @@ export type Desired = {
 export type OperationRow = {
 	id: string;
 	import_id: string;
-	source_release_id: string;
 	kind: "add" | "replace" | "delete" | "repair";
 	phase: ImportOperationPhase;
 	target_destination_path: string;

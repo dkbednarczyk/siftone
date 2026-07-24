@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { ImportState } from "../import-state";
@@ -50,8 +49,8 @@ function updatePhase(
 	error?: string,
 ): void {
 	state.database.run(
-		"UPDATE operations SET phase = ?, error_message = ?, updated_at_ns = ? WHERE id = ?",
-		[phase, error ?? null, nowNs(), id],
+		"UPDATE operations SET phase = ?, error_message = ? WHERE id = ?",
+		[phase, error ?? null, id],
 	);
 }
 
@@ -61,10 +60,10 @@ function priorVersion(
 ): PriorVersion | null {
 	return state.database
 		.query<PriorVersion, [string]>(`
-			SELECT pd.destination_path, pd.version_id, av.version_path
-			FROM published_destinations pd
-			JOIN album_versions av ON av.id = pd.version_id
-			WHERE pd.import_id = ?
+			SELECT i.destination_path, i.current_version_id AS version_id, av.version_path
+			FROM imports i
+			JOIN album_versions av ON av.id = i.current_version_id
+			WHERE i.id = ?
 		`)
 		.get(importId);
 }
@@ -85,11 +84,8 @@ function finalizeDelete(
 		state.database.run("DELETE FROM imports WHERE id = ?", [
 			operation.import_id,
 		]);
-		state.database.run("DELETE FROM source_releases WHERE id = ?", [
-			operation.source_release_id,
-		]);
 		state.database.run(
-			"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM source_releases)",
+			"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM imports)",
 		);
 	});
 }
@@ -105,53 +101,33 @@ function finalizePublication(
 	}
 
 	immediate(state, () => {
-		const timestamp = nowNs();
 		const promoted = state.database.run(
-			"UPDATE album_versions SET import_id = ?, state = 'current', published_at_ns = ?, retired_at_ns = NULL WHERE id = ? AND state = 'pending'",
-			[operation.import_id, timestamp, operation.version_id],
+			"UPDATE album_versions SET state = 'current', retired_at_ns = NULL WHERE id = ? AND state = 'pending'",
+			[operation.version_id],
 		);
 		if (promoted.changes !== 1) {
 			throw new Error("Pending version cannot be promoted");
 		}
 
-		const destination = state.database
-			.query<{ id: string }, [string]>(
-				"SELECT id FROM published_destinations WHERE import_id = ?",
-			)
-			.get(operation.import_id);
-		const destinationId = destination?.id ?? randomUUID();
-		if (destination === null || destination === undefined) {
-			state.database.run(
-				"INSERT INTO published_destinations (id, import_id, version_id, destination_path, published_at_ns) VALUES (?, ?, ?, ?, ?)",
-				[
-					destinationId,
-					operation.import_id,
-					operation.version_id,
-					operation.target_destination_path,
-					timestamp,
-				],
-			);
-		} else {
-			state.database.run(
-				"UPDATE published_destinations SET version_id = ?, destination_path = ?, published_at_ns = ? WHERE id = ?",
-				[
-					operation.version_id,
-					operation.target_destination_path,
-					timestamp,
-					destinationId,
-				],
-			);
-		}
+		state.database.run(
+			"UPDATE imports SET manifest_hash = ?, destination_path = ?, current_version_id = ? WHERE id = ?",
+			[
+				manifestHash(entries),
+				operation.target_destination_path,
+				operation.version_id,
+				operation.import_id,
+			],
+		);
 
 		state.database.run(
-			"DELETE FROM destination_entries WHERE destination_id = ?",
-			[destinationId],
+			"DELETE FROM destination_entries WHERE import_id = ?",
+			[operation.import_id],
 		);
 		for (const entry of entries) {
 			state.database.run(
-				"INSERT INTO destination_entries (destination_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO destination_entries (import_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
 				[
-					destinationId,
+					operation.import_id,
 					entry.destinationName,
 					entry.sourcePath,
 					entry.size,
@@ -162,17 +138,13 @@ function finalizePublication(
 		}
 
 		state.database.run(
-			"UPDATE imports SET manifest_hash = ?, updated_at_ns = ? WHERE id = ?",
-			[manifestHash(entries), timestamp, operation.import_id],
-		);
-		state.database.run(
-			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ?)",
-			[operation.source_release_id, operation.id],
+			"DELETE FROM source_files WHERE import_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ?)",
+			[operation.import_id, operation.id],
 		);
 		if (prior !== null && prior.version_id !== operation.version_id) {
 			state.database.run(
 				"UPDATE album_versions SET state = 'retired', retired_at_ns = ? WHERE id = ? AND state = 'current'",
-				[timestamp, prior.version_id],
+				[nowNs(), prior.version_id],
 			);
 		}
 		state.database.run("DELETE FROM operations WHERE id = ?", [
@@ -386,19 +358,10 @@ export async function executeOperation(
 		const message = error instanceof Error ? error.message : String(error);
 		if (error instanceof Error) {
 			updatePhase(state, operation.id, "attention_required", message);
-			state.database.run(
-				"INSERT OR IGNORE INTO reviews (id, import_id, operation_id, kind, details_json, created_at_ns) VALUES (?, NULL, ?, 'attention_required', ?, ?)",
-				[
-					randomUUID(),
-					operation.id,
-					JSON.stringify({ message }),
-					nowNs(),
-				],
-			);
 		} else {
 			state.database.run(
-				"UPDATE operations SET error_message = ?, updated_at_ns = ? WHERE id = ?",
-				[message, nowNs(), operation.id],
+				"UPDATE operations SET error_message = ? WHERE id = ?",
+				[message, operation.id],
 			);
 		}
 		throw error;

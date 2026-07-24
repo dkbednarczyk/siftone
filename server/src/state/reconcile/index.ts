@@ -46,7 +46,7 @@ export async function recoverInterruptedOperations({
 
 	const operations = state.database
 		.query<OperationRow, []>(
-			"SELECT id, import_id, source_release_id, kind, phase, target_destination_path, staging_path, version_id, version_path FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
+			"SELECT id, import_id, kind, phase, target_destination_path, staging_path, version_id, version_path FROM operations WHERE phase <> 'attention_required' ORDER BY created_at_ns",
 		)
 		.all();
 
@@ -83,7 +83,7 @@ export async function hasPublishedOutputDrift({
 			},
 			[]
 		>(
-			"SELECT i.id AS import_id, pd.destination_path, av.version_path FROM imports i LEFT JOIN published_destinations pd ON pd.import_id = i.id LEFT JOIN album_versions av ON av.id = pd.version_id",
+			"SELECT i.id AS import_id, i.destination_path, av.version_path FROM imports i JOIN album_versions av ON av.id = i.current_version_id WHERE i.destination_path IS NOT NULL",
 		)
 		.all();
 
@@ -229,19 +229,11 @@ export async function reconcileImports({
 					existing.destination_path,
 				),
 			);
-		} else if (
-			existing.container_availability !== "present" ||
-			existing.release_availability !== "present"
-		) {
+		} else if (existing.availability !== "present") {
 			immediate(state, () => {
-				const timestamp = nowNs();
 				state.database.run(
-					"UPDATE source_containers SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE root_path = ?",
-					[timestamp, item.containerPath],
-				);
-				state.database.run(
-					"UPDATE source_releases SET availability = 'present', missing_since_ns = NULL, updated_at_ns = ? WHERE id = ?",
-					[timestamp, existing.release_id],
+					"UPDATE imports SET availability = 'present' WHERE id = ?",
+					[existing.import_id],
 				);
 			});
 		}
@@ -268,11 +260,11 @@ export async function reconcileImports({
 				continue;
 			}
 
-			if (row.release_availability === "present") {
+			if (row.availability === "present") {
 				immediate(state, () =>
 					state.database.run(
-						"UPDATE source_releases SET availability = 'missing', missing_since_ns = COALESCE(missing_since_ns, ?), updated_at_ns = ? WHERE id = ?",
-						[nowNs(), nowNs(), row.release_id],
+						"UPDATE imports SET availability = 'missing' WHERE id = ?",
+						[row.import_id],
 					),
 				);
 
@@ -284,13 +276,10 @@ export async function reconcileImports({
 					state,
 					{
 						import_id: row.import_id,
-						release_id: row.release_id,
 						destination_path: row.destination_path,
-						version_id: null,
 						version_path: null,
 						manifest_hash: "",
-						container_availability: "missing",
-						release_availability: "missing",
+						availability: "missing",
 					},
 					undefined,
 					stagingRoot,
@@ -303,8 +292,8 @@ export async function reconcileImports({
 
 		if (complete && incompleteSourceContainers.length === 0) {
 			state.database.run(
-				"UPDATE reconciliation_state SET required = 0, last_full_scan_at_ns = ?, last_error = NULL, updated_at_ns = ? WHERE id = 1",
-				[nowNs(), nowNs()],
+				"UPDATE reconciliation_state SET required = 0, last_full_scan_at_ns = ? WHERE id = 1",
+				[nowNs()],
 			);
 		}
 	}

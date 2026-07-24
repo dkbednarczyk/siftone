@@ -193,19 +193,20 @@ published or trusted as metadata.
 ## State and recovery
 
 - **SQLite (`bun:sqlite`)** uses the destructive `library-state.sqlite`
-  format: source containers/releases/files, imports, published destinations/entries,
-  frozen operations, and FK-owned reviews. It uses `STRICT` tables, WAL, foreign
-  keys, a busy timeout, and `synchronous=NORMAL`; it has no migration or
-  compatibility path.
+  format: source containers/files, imports with their current published
+  destination/version, frozen destination entries, and frozen operations. It uses
+  `STRICT` tables, WAL, foreign keys, a busy timeout, and `synchronous=NORMAL`;
+  it has no migration or compatibility path.
 - Source paths, generated paths, and operation staging paths are canonical
   absolute `/`-separated paths, `BINARY`-compared by SQLite, and are rejected
   when relative, traversing, empty, or backslash-separated. Source-file lookup
-  is the `source_files.source_path` primary key; normal fingerprints are
-  `size + mtime_ns` stored as SQLite integers/JavaScript `bigint`.
-- Every unresolved operation owns one import/source release and claims every
-  old/new destination path. Its filesystem checkpoint is only a recovery hint:
-  restart inspects staging, destination, and tombstone state before resuming
-  idempotently.
+  is the `source_files.source_path` primary key. Frozen operation and destination
+  entries retain the `size + mtime_ns` fingerprints used for staging and drift
+  validation.
+- Every unresolved operation owns one import and claims every old/new destination
+  path. Its phase and error message are the only persisted failure state; its
+  filesystem checkpoint is a recovery hint. Restart inspects staging, destination,
+  and tombstone state before resuming idempotently.
 - Siftone does not recursively watch source directories. Recursive inotify watches
   consume one watch per directory and can exceed Linux watch limits. Instead, a
   bounded complete directory traversal is reconciled on a timer; this deliberately

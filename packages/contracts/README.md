@@ -8,7 +8,7 @@ Shared TypeScript contracts for the Siftone server and CLI. This package is the 
 src/
   api/       REST request/response schemas
   events/    SSE event schemas
-  models/    candidates, imports, reviews, artwork, notifications, profiles
+  models/    candidates, imports, artwork, notifications, profiles
   errors/    stable machine-readable error codes
   version/   contract version and compatibility helpers
 ```

@@ -91,9 +91,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 			console.info(
 				"Initial source observation is incomplete; reconciliation will retry at the next interval.",
 			);
-			importState.markReconciliationRequired(
-				`Incomplete startup source observation: ${startupObservation.issues[0] ?? "unknown issue"}`,
-			);
+			importState.markReconciliationRequired();
 		} else {
 			const startupManifest = importState.observeSourceManifest({
 				watchRoot: config.paths.watchRoot,
@@ -102,9 +100,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 			});
 			bypassInitialConfirmation = importState.isTabulaRasa;
 			if (bypassInitialConfirmation) {
-				importState.markReconciliationRequired(
-					"Initial library import is starting without interval-separated confirmation",
-				);
+				importState.markReconciliationRequired();
 				console.info(
 					"No existing library state; starting the first complete library build immediately.",
 				);
@@ -117,9 +113,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					"Source snapshot is unchanged; no reconciliation work is pending.",
 				);
 			} else {
-				importState.markReconciliationRequired(
-					"Source snapshot awaits interval-separated confirmation",
-				);
+				importState.markReconciliationRequired();
 				console.info(
 					`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
 				);
@@ -137,9 +131,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					(await observeSource(config.paths.watchRoot));
 				reusableObservation = undefined;
 				if (!observation.complete) {
-					importState.markReconciliationRequired(
-						`Incomplete periodic source observation: ${observation.issues[0] ?? "unknown issue"}`,
-					);
+					importState.markReconciliationRequired();
 					return;
 				}
 
@@ -149,9 +141,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
 				});
 				if (!sourceManifest.confirmed && !bypassInitialConfirmation) {
-					importState.markReconciliationRequired(
-						"Source snapshot awaits interval-separated confirmation",
-					);
+					importState.markReconciliationRequired();
 					console.info(
 						"Source snapshot changed; waiting for the next interval to confirm it before importing.",
 					);
@@ -206,9 +196,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 				);
 
 				if (next.hasIssues) {
-					importState.markReconciliationRequired(
-						"Periodic source scan found invalid or incomplete candidates",
-					);
+					importState.markReconciliationRequired();
 				}
 
 				console.info(
@@ -240,10 +228,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					)} to reconcile ${next.plans.length} desired import(s) from complete source scan.`,
 				);
 			},
-			onFailure: (error) =>
-				importState.markReconciliationRequired(
-					`Periodic source scan failed: ${error.message}`,
-				),
+			onFailure: () => importState.markReconciliationRequired(),
 		});
 
 		watcher = sourceWatcher;

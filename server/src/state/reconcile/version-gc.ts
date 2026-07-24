@@ -23,7 +23,7 @@ export async function collectRetiredVersions(
 	>(state.database.query(retiredVersionsQuery), cutoff);
 	const leaves = state.database
 		.query<{ destination_path: string }, []>(
-			"SELECT destination_path FROM published_destinations",
+			"SELECT destination_path FROM imports WHERE destination_path IS NOT NULL",
 		)
 		.all();
 	try {
@@ -49,10 +49,8 @@ export async function collectRetiredVersions(
 				});
 			}
 		}
-	} catch (error) {
-		state.markReconciliationRequired(
-			`Cannot inspect public leaves before version GC: ${String(error)}`,
-		);
+	} catch {
+		state.markReconciliationRequired();
 		return;
 	}
 
@@ -63,7 +61,7 @@ export async function collectRetiredVersions(
 		if (
 			state.database
 				.query<{ found: number }, [string]>(
-					"SELECT EXISTS(SELECT 1 FROM published_destinations WHERE version_id = ?) AS found",
+					"SELECT EXISTS(SELECT 1 FROM imports WHERE current_version_id = ?) AS found",
 				)
 				.get(candidate.id)?.found === 1 ||
 			state.database
@@ -107,10 +105,8 @@ export async function collectRetiredVersions(
 				"DELETE FROM album_versions WHERE id = ? AND state = 'retired'",
 				[candidate.id],
 			);
-		} catch (error) {
-			state.markReconciliationRequired(
-				`Cannot collect retired version ${candidate.version_path}: ${String(error)}`,
-			);
+		} catch {
+			state.markReconciliationRequired();
 		}
 	}
 }
