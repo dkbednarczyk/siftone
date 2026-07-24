@@ -35,6 +35,14 @@ export type ValidatedTrack = Readonly<{
 	discNumber: number;
 }>;
 
+type PendingTrack = Readonly<{
+	path: string;
+	title: string;
+	artist: string;
+	trackNumber: number;
+	discNumber?: number;
+}>;
+
 export type ValidatedCandidate = Readonly<{
 	root: string;
 	album: string;
@@ -176,6 +184,65 @@ function selectArtworkPath(
 	return {};
 }
 
+function inferDiscNumber(root: string, path: string): number | undefined {
+	const components = relative(root, path).split(sep);
+	const directory = components[0];
+
+	if (directory === undefined || components.length !== 2) {
+		return undefined;
+	}
+
+	const match = /^(?:cd|disc)[ _-]?([1-9]\d*)$/iu.exec(directory);
+	if (match === null) {
+		return undefined;
+	}
+
+	const discNumber = Number(match[1]);
+
+	return Number.isSafeInteger(discNumber) ? discNumber : undefined;
+}
+
+function hasDuplicateTrackNumbers(tracks: readonly PendingTrack[]): boolean {
+	const trackNumbers = new Set<number>();
+
+	for (const track of tracks) {
+		if (trackNumbers.has(track.trackNumber)) {
+			return true;
+		}
+
+		trackNumbers.add(track.trackNumber);
+	}
+
+	return false;
+}
+
+function resolveDiscNumbers(
+	root: string,
+	tracks: readonly PendingTrack[],
+): ValidatedTrack[] {
+	const needsDirectoryInference =
+		tracks.every((track) => track.discNumber === undefined) &&
+		hasDuplicateTrackNumbers(tracks);
+
+	if (needsDirectoryInference) {
+		const inferredDiscNumbers = tracks.map((track) =>
+			inferDiscNumber(root, track.path),
+		);
+
+		if (inferredDiscNumbers.every(isPositiveInteger)) {
+			return tracks.map((track, index) => ({
+				...track,
+				discNumber: inferredDiscNumbers[index],
+			}));
+		}
+	}
+
+	return tracks.map((track) => ({
+		...track,
+		discNumber: track.discNumber ?? 1,
+	}));
+}
+
 /**
  * Validates the embedded metadata required to create a deterministic album
  * layout. It reports issues from the first invalid file instead of throwing so
@@ -186,13 +253,12 @@ export async function validateCandidate(
 	readTags: AudioTagReader,
 ): Promise<ValidationResult> {
 	const issues: ValidationIssue[] = [];
-	const tracks: ValidatedTrack[] = [];
+	const tracks: PendingTrack[] = [];
 
 	let expectedAlbum: string | undefined;
 
 	const albumArtists = new Set<string>();
 	const artists = new Set<string>();
-	const discTracks = new Set<string>();
 
 	for (const path of candidate.audioPaths) {
 		let tags: AudioTags;
@@ -270,20 +336,6 @@ export async function validateCandidate(
 			throw new Error("Candidate validation invariant violated");
 		}
 
-		const discNumber = tags.discNumber ?? 1;
-		const discTrackKey = `${discNumber}:${tags.trackNumber}`;
-		if (discTracks.has(discTrackKey)) {
-			issues.push(
-				issue(
-					"DUPLICATE_DISC_TRACK",
-					`Duplicate disc and track number ${discTrackKey}`,
-					path,
-				),
-			);
-
-			break;
-		}
-
 		if (expectedAlbum !== undefined && expectedAlbum !== trackAlbum) {
 			issues.push(
 				issue("CONFLICTING_ALBUM", "Tracks must share one ALBUM", path),
@@ -308,7 +360,6 @@ export async function validateCandidate(
 			break;
 		}
 
-		discTracks.add(discTrackKey);
 		expectedAlbum = trackAlbum;
 		if (trackAlbumArtist !== undefined) {
 			albumArtists.add(trackAlbumArtist);
@@ -320,7 +371,7 @@ export async function validateCandidate(
 			title,
 			artist,
 			trackNumber: tags.trackNumber,
-			discNumber,
+			discNumber: tags.discNumber,
 		});
 	}
 
@@ -336,18 +387,40 @@ export async function validateCandidate(
 		};
 	}
 
+	const resolvedTracks = resolveDiscNumbers(candidate.root, tracks);
+	const discTracks = new Set<string>();
+
+	for (const track of resolvedTracks) {
+		const discTrackKey = `${track.discNumber}:${track.trackNumber}`;
+		if (discTracks.has(discTrackKey)) {
+			return {
+				valid: false,
+				root: candidate.root,
+				issues: [
+					issue(
+						"DUPLICATE_DISC_TRACK",
+						`Duplicate disc and track number ${discTrackKey}`,
+						track.path,
+					),
+				],
+			};
+		}
+
+		discTracks.add(discTrackKey);
+	}
+
 	const [explicitAlbumArtist] = albumArtists;
 	const albumArtist =
 		explicitAlbumArtist ??
 		(artists.size === 1 ? tracks[0].artist : "Various Artists");
-	const artwork = selectArtworkPath(candidate, tracks, expectedAlbum);
+	const artwork = selectArtworkPath(candidate, resolvedTracks, expectedAlbum);
 	return {
 		valid: true,
 		candidate: {
 			root: candidate.root,
 			album: expectedAlbum,
 			albumArtist,
-			tracks,
+			tracks: resolvedTracks,
 			...(artwork.path === undefined
 				? {}
 				: { artworkPath: artwork.path }),

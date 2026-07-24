@@ -250,7 +250,7 @@ describe("server command", () => {
 			);
 			const output = await readUntil(
 				child.stdout,
-				"waiting 300 seconds to confirm it before importing",
+				"confirming it in 30 seconds before importing",
 				2_000,
 			);
 			expect(output).not.toContain(

@@ -153,19 +153,21 @@ describe("server configuration", () => {
 		);
 	});
 
-	test("defaults and validates the reconciliation interval", async () => {
+	test("defaults and validates scan and source-stability intervals", async () => {
 		const directory = await makeTemporaryDirectory();
 		const configPath = await writeConfig(directory);
 		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
 			reconciliationIntervalSeconds: 300,
+			sourceStabilitySeconds: 30,
 		});
 
 		await writeFile(
 			configPath,
-			`[server]\nreconciliation_interval_seconds = 60\n\n${tomlPaths()}`,
+			`[server]\nreconciliation_interval_seconds = 60\nsource_stability_seconds = 10\n\n${tomlPaths()}`,
 		);
 		await expect(loadExplicitConfig(configPath)).resolves.toMatchObject({
 			reconciliationIntervalSeconds: 60,
+			sourceStabilitySeconds: 10,
 		});
 
 		await writeFile(
@@ -174,6 +176,14 @@ describe("server configuration", () => {
 		);
 		await expect(loadExplicitConfig(configPath)).rejects.toThrow(
 			"server.reconciliation_interval_seconds",
+		);
+
+		await writeFile(
+			configPath,
+			`[server]\nsource_stability_seconds = 0\n\n${tomlPaths()}`,
+		);
+		await expect(loadExplicitConfig(configPath)).rejects.toThrow(
+			"server.source_stability_seconds",
 		);
 	});
 

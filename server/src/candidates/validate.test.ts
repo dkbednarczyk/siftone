@@ -331,7 +331,79 @@ describe("candidate metadata validation", () => {
 		expect(calls).toEqual([first]);
 	});
 
-	test("stops after a duplicate disc and track number", async () => {
+	test("infers disc numbers from direct Disc N directories when all tags omit them", async () => {
+		const first = "/source/Album/Disc 1/01 Song.flac";
+		const second = "/source/Album/Disc 2/01 Song.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first }),
+				[second]: tags({
+					path: second,
+					title: "Second",
+				}),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			valid: true,
+			candidate: {
+				tracks: [
+					{ path: first, discNumber: 1, trackNumber: 1 },
+					{ path: second, discNumber: 2, trackNumber: 1 },
+				],
+			},
+		});
+	});
+
+	test("rejects duplicate tracks when directory inference is ambiguous", async () => {
+		const first = "/source/Album/Disc 1/01 Song.flac";
+		const second = "/source/Album/bonus/01 Duplicate.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first }),
+				[second]: tags({ path: second, title: "Duplicate" }),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			valid: false,
+			issues: [
+				{
+					code: "DUPLICATE_DISC_TRACK",
+					path: second,
+				},
+			],
+		});
+	});
+
+	test("rejects mixed explicit and inferred disc numbers", async () => {
+		const first = "/source/Album/Disc 1/01 Song.flac";
+		const second = "/source/Album/Disc 2/01 Duplicate.flac";
+
+		const result = await validateCandidate(
+			candidate(first, second),
+			reader({
+				[first]: tags({ path: first, discNumber: 1 }),
+				[second]: tags({ path: second, title: "Duplicate" }),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			valid: false,
+			issues: [
+				{
+					code: "DUPLICATE_DISC_TRACK",
+					path: second,
+				},
+			],
+		});
+	});
+
+	test("reports duplicate disc and track numbers after metadata validation", async () => {
 		const first = "/source/Album/disc-1/01 Song.flac";
 		const second = "/source/Album/disc-1/01 Duplicate.flac";
 		const third = "/source/Album/disc-1/02 Unread.flac";
@@ -363,6 +435,6 @@ describe("candidate metadata validation", () => {
 				},
 			],
 		});
-		expect(calls).toEqual([first, second]);
+		expect(calls).toEqual([first, second, third]);
 	});
 });

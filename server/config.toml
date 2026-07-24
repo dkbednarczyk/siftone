@@ -1,6 +1,8 @@
 [server]
 # A complete bounded source traversal runs at this cadence.
 reconciliation_interval_seconds = 300
+# After a changed snapshot, run one confirmation scan after this delay.
+source_stability_seconds = 30
 
 [paths]
 watch_root = "/mnt/f"

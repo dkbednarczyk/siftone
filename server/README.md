@@ -1,8 +1,6 @@
 # `@siftone/server`
 
-Linux/POSIX music-management server. It reads one configured root, turns valid FLAC/MP3 release folders into a managed Subsonic-compatible symlink library, records ownership in SQLite, reconciles periodic source snapshots, and exposes health and local reconciliation-testing endpoints.
-
-Read the [architecture guide](./docs/architecture.md) to understand the server's ownership boundaries, lifecycle, and safe extension points. The current HTTP transport uses [Elysia](https://elysiajs.com/) and Bun-native APIs. Route handlers stay thin; scanning, SQLite, filesystem, and import services remain framework-independent.
+Linux/POSIX music-management server. It reads one configured root, turns valid FLAC/MP3 release folders into a managed Subsonic-compatible symlink library, records ownership in SQLite, reconciles periodic source snapshots, and exposes local health and reconciliation endpoints.
 
 ## Development
 
@@ -57,8 +55,10 @@ bun run --cwd server state:restore /path/to/imports.sqlite
 
 ```toml
 [server]
-# Optional; defaults to 300 seconds.
+# Optional; defaults to 300 seconds. This is the full-scan cadence.
 reconciliation_interval_seconds = 300
+# Optional; defaults to 30 seconds. This is the unchanged-snapshot delay.
+source_stability_seconds = 30
 
 [paths]
 watch_root = "/srv/downloads"
@@ -70,7 +70,10 @@ Only the source **watch root** and symlink destination **generated library
 root** are required. `server.port` is optional and defaults to `3000`; when
 specified it must be an integer from `1` through `65535`.
 `server.reconciliation_interval_seconds` defaults to `300` and controls the
-periodic complete source snapshot cadence.
+periodic complete source snapshot cadence. `server.source_stability_seconds`
+defaults to `30`; after a changed complete snapshot, Siftone makes one
+confirmation scan after this delay. If that scan also changed, it resumes the
+regular scan cadence instead of repeatedly polling.
 
 The configuration defaults to `config.toml` in the current working directory.
 Managed data defaults under `~/.siftone`:
@@ -97,20 +100,18 @@ otherwise overlapping roots.
 
 ## Current behavior
 
-- Discover each immediate real child of the watch root as a candidate; recurse deterministically within it for FLAC/MP3 and JPEG/PNG sidecars (case-insensitive), with files accepted through eight path components below the candidate root (directories at that boundary are pruned) and a 10,000-entry budget per candidate. Discovery reports a recoverable issue when either limit prunes paths, excludes candidates with no discovered audio, and ignores all source symlinks.
+- Discover each immediate real child directory of the watch root as a candidate; loose files in the watch root never qualify. Recurse deterministically through at most three nested source directories for FLAC/MP3 and JPEG/PNG sidecars (case-insensitive), with a 10,000-entry budget per candidate. Discovery excludes over-limit candidates, excludes candidates with no discovered audio, and ignores source symlinks.
 - Read embedded tags and validate the fields required for publication.
 - At boot, bind the HTTP listener before opening SQLite or running import work, so
-  an unavailable port fails without scanning or changing import state. Health is
-  degraded while startup continues with opening the SQLite ownership/state
-  database, creating a verified daily backup, recovering interrupted operations,
-  preflighting every plan, and reconciling it against generated output. The
-  a single-flight scheduler then performs complete periodic source snapshots.
-  A new or changed snapshot must remain identical for one configured interval
-  before reconciliation; failed or incomplete snapshots degrade health, and a
-  later confirmed complete reconciliation restores it.
+  an unavailable port fails without scanning or changing import state. Startup
+  opens the SQLite ownership database, creates a verified daily backup, recovers
+  interrupted operations, and observes the source. A single-flight scheduler then
+  performs complete periodic source snapshots. A changed snapshot is confirmed by
+  one scan after `source_stability_seconds`; failed or incomplete snapshots degrade
+  health until a later complete reconciliation succeeds.
 - Reconciliation rejects invalid or unmanaged generated entries, stages complete
   albums into immutable version directories, and atomically swaps the public
-  album-leaf symlink. It records add, replace, repair, and delayed-delete
+  album-leaf symlink. It records add, replace, repair, and unpublish
   operations in SQLite so a rerun can resume after a failure without rolling back
   earlier successful albums.
 
@@ -133,9 +134,12 @@ split single-image releases into track-level output because generated output is
 symlink-only.
 
 Multi-disc tracks are flattened and continuously numbered by disc then track:
-`01 Title.ext`, `02 Title.ext`, and so on. The current validator defaults an
-absent `DISCNUMBER` to disc one and rejects duplicate disc/track pairs;
-directory-based disc inference remains to be built.
+`01 Title.ext`, `02 Title.ext`, and so on. The validator defaults an absent
+`DISCNUMBER` to disc one. When every track lacks `DISCNUMBER`, duplicate track
+numbers would otherwise reject the release, and every track is directly inside a
+`CD N` or `Disc N` directory, those directory numbers are used instead. Mixed
+explicit and missing disc tags, deeper directory layouts, and ambiguous directory
+names are rejected.
 
 ## Generated library
 
@@ -150,9 +154,9 @@ multiple exact track artists occur, it uses `Various Artists`. One consistent
 explicit `ALBUMARTIST` may be absent from other tracks, but conflicting explicit
 values invalidate the whole same-title release. Releases are split by exact
 embedded `ALBUM` values, not source folder names. Paths are deterministically
-sanitized while preserving Unicode. Competing non-equivalent destinations require
-review; an otherwise identical pure-MP3 contender is automatically suppressed when
-an equivalent pure-FLAC contender exists.
+sanitized while preserving Unicode. Competing non-equivalent destinations are left
+unpublished; an otherwise identical pure-MP3 contender is automatically suppressed
+when an equivalent pure-FLAC contender exists.
 
 Each generated album version contains only audio symlinks and an optional
 local-artwork symlink, named `cover.jpg` or `cover.png`. The public
@@ -168,7 +172,7 @@ Sources are immutable: never write, edit, move, rename, delete, chmod/chown, or
 create markers in them. Only the server writes generated-library, staging,
 state, and backup roots. SQLite-tracked generated albums are repaired from their
 recorded import state; unknown or unsafe generated-tree drift is preserved and
-reported for review.
+recorded as a reconciliation issue.
 
 ## Source lifecycle
 
@@ -181,7 +185,6 @@ reported for review.
   incomplete scans and I/O errors preserve existing output.
 - Folder path/name is candidate identity. A rename/move is a missing old candidate
   plus a new candidate; no inode/device tracking.
-- Immediate notifications, retry policy, and review resolution remain planned.
 
 ## Artwork
 
@@ -216,28 +219,8 @@ published or trusted as metadata.
   containers are reported and excluded without blocking other releases. Root-only
   listings were rejected because supported candidate directories may be modified in
   place.
-- Keep boot-critical paths/network settings in a server-owned TOML file. Future
-  CLI-editable runtime settings will live in SQLite. Daily backups are
-  self-contained snapshots named by UTC date.
-
-## Planned API and security
-
-Expose JSON REST for commands/queries and authenticated SSE for progress and
-persisted notifications. Use a long random named token per client; store only token
-hashes and permit individual revocation. Initial tokens are created by a local
-server-admin command and shown once.
-
-The server runs as a normal foreground process with stdout/stderr logs and graceful
-signals. It accepts a configurable TOML port but always binds to localhost; HTTPS
-is terminated by the hosting provider or another local reverse proxy.
-
-Bound request body sizes, throttle failed authentication, allow one active
-scan/reconciliation per candidate, cap artwork concurrency, and return `429` with
-retry guidance.
-
-## V1 binary targets
-
-Linux x64. Linux ARM64 is deferred.
+- Keep boot-critical paths and network settings in a server-owned TOML file. Daily
+  backups are self-contained snapshots named by UTC date.
 
 ## Non-goals
 

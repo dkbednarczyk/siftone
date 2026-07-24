@@ -47,8 +47,31 @@ function pathOption(flags: string, name: "config" | "backup"): Option {
 async function runServer(config: ServerConfig): Promise<void> {
 	let state: ImportState | undefined;
 	let watcher: ReconciliationScheduler | undefined;
+	let confirmationTimer: ReturnType<typeof setTimeout> | undefined;
+	let confirmationPending = false;
 
 	let ready = false;
+
+	function clearSourceConfirmation(): void {
+		if (confirmationTimer !== undefined) {
+			clearTimeout(confirmationTimer);
+			confirmationTimer = undefined;
+		}
+
+		confirmationPending = false;
+	}
+
+	function requestSourceConfirmation(): void {
+		if (confirmationPending) {
+			return;
+		}
+
+		confirmationPending = true;
+		confirmationTimer = setTimeout(() => {
+			confirmationTimer = undefined;
+			watcher?.request();
+		}, config.sourceStabilitySeconds * 1_000);
+	}
 
 	const server = createApp(
 		() => (ready && state?.isDegraded() ? "degraded" : "ok"),
@@ -104,6 +127,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 		const startupObservation = await observeSource(config.paths.watchRoot);
 		let bypassInitialConfirmation = false;
 		let requestStartupReconciliation = false;
+		let requestStartupConfirmation = false;
 
 		if (!startupObservation.complete) {
 			console.info(
@@ -126,7 +150,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 			const startupManifest = importState.observeSourceManifest({
 				watchRoot: config.paths.watchRoot,
 				manifestHash: startupObservation.manifestHash,
-				minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
+				minimumAgeMs: config.sourceStabilitySeconds * 1_000,
 			});
 			bypassInitialConfirmation = importState.isTabulaRasa;
 			if (bypassInitialConfirmation) {
@@ -151,8 +175,9 @@ async function runServer(config: ServerConfig): Promise<void> {
 						"Initial source snapshot is confirmed but has not been reconciled; reconciling now.",
 					);
 				} else {
+					requestStartupConfirmation = true;
 					console.info(
-						`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
+						`Initial source snapshot recorded; confirming it in ${config.sourceStabilitySeconds} seconds before importing.`,
 					);
 				}
 			}
@@ -189,14 +214,24 @@ async function runServer(config: ServerConfig): Promise<void> {
 				const sourceManifest = importState.observeSourceManifest({
 					watchRoot: config.paths.watchRoot,
 					manifestHash: observation.manifestHash,
-					minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
+					minimumAgeMs: config.sourceStabilitySeconds * 1_000,
 				});
 				if (!sourceManifest.confirmed && !bypassInitialConfirmation) {
-					console.info(
-						"Source snapshot changed; waiting for the next interval to confirm it before importing.",
-					);
+					if (confirmationPending) {
+						clearSourceConfirmation();
+						console.info(
+							"Source snapshot changed during confirmation; returning to the regular scan cadence.",
+						);
+					} else {
+						requestSourceConfirmation();
+						console.info(
+							`Source snapshot changed; confirming it in ${config.sourceStabilitySeconds} seconds before importing.`,
+						);
+					}
+
 					return;
 				}
+				clearSourceConfirmation();
 
 				const startingFirstBuild = bypassInitialConfirmation;
 				if (startingFirstBuild) {
@@ -298,11 +333,15 @@ async function runServer(config: ServerConfig): Promise<void> {
 		});
 
 		watcher = sourceWatcher;
+		if (requestStartupConfirmation) {
+			requestSourceConfirmation();
+		}
 		if (bypassInitialConfirmation || requestStartupReconciliation) {
 			sourceWatcher.request();
 		}
 		ready = true;
 	} catch (error) {
+		clearSourceConfirmation();
 		if (watcher !== undefined) {
 			await watcher.close();
 		}
@@ -333,6 +372,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 		stopping = true;
 		console.info(`Received ${signal}; stopping Siftone server.`);
 
+		clearSourceConfirmation();
 		await runningWatcher.close();
 		await server.stop();
 

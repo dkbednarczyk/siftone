@@ -21,6 +21,7 @@ export type ServerConfig = Readonly<{
 	configPath: string;
 	port: number;
 	reconciliationIntervalSeconds: number;
+	sourceStabilitySeconds: number;
 	paths: ServerPaths;
 	versionRetentionHours: number;
 }>;
@@ -33,12 +34,14 @@ export type ConfigLoadOptions = Readonly<{
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 300;
+const DEFAULT_SOURCE_STABILITY_SECONDS = 30;
 
 const TomlConfigSchema = z.strictObject({
 	server: z
 		.strictObject({
 			port: z.number().int().min(1).max(65_535).optional(),
 			reconciliation_interval_seconds: z.number().int().min(1).optional(),
+			source_stability_seconds: z.number().int().min(1).optional(),
 		})
 		.optional(),
 	paths: z.strictObject({
@@ -299,6 +302,9 @@ export async function loadServerConfig(
 		reconciliationIntervalSeconds:
 			result.data.server?.reconciliation_interval_seconds ??
 			DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
+		sourceStabilitySeconds:
+			result.data.server?.source_stability_seconds ??
+			DEFAULT_SOURCE_STABILITY_SECONDS,
 		paths: await parsePaths(
 			result.data,
 			options.homeDirectory ?? homedir(),
