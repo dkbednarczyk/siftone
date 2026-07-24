@@ -23,6 +23,7 @@ function manifestEntry(entry: Entry): readonly string[] {
 		entry.destinationName,
 		entry.size.toString(),
 		entry.mtimeNs.toString(),
+		entry.ctimeNs.toString(),
 		entry.kind,
 	];
 }
@@ -96,6 +97,7 @@ export async function desiredFor(
 			destinationName,
 			size: status.size,
 			mtimeNs: status.mtimeNs,
+			ctimeNs: status.ctimeNs,
 			kind: audioOrArtwork(entry.sourcePath),
 		});
 	}

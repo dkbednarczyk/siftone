@@ -1,11 +1,15 @@
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { PublicationInput } from "../../publication/plan";
-import { canonicalAbsolutePath, isPathWithinRoot } from "../../util/path";
+import {
+	canonicalAbsolutePath,
+	isMissingError,
+	isPathWithinRoot,
+} from "../../util/path";
 import type { ImportState } from "../import-state";
 import { ensurePublicationRoots, isOwnedPublicLeaf } from "../operation-paths";
 import { desiredFor, entriesMatch } from "../publication-snapshot";
-import { immediate, nowNs } from "./database";
+import { immediate } from "./database";
 import { executeOperation } from "./execute-operation";
 import { currentImports, destinationEntries } from "./operation-entries";
 import { createOperation, existingFor } from "./operation-store";
@@ -83,7 +87,7 @@ export async function hasPublishedOutputDrift({
 			},
 			[]
 		>(
-			"SELECT i.id AS import_id, i.destination_path, av.version_path FROM imports i JOIN album_versions av ON av.id = i.current_version_id WHERE i.destination_path IS NOT NULL",
+			"SELECT i.id AS import_id, i.destination_path, av.version_path FROM imports i JOIN album_versions av ON av.id = i.current_version_id WHERE i.destination_path IS NOT NULL AND i.availability = 'present'",
 		)
 		.all();
 
@@ -104,6 +108,103 @@ export async function hasPublishedOutputDrift({
 	}
 
 	return false;
+}
+
+async function hasUnavailableSourceEntries(
+	entries: ReturnType<typeof destinationEntries>,
+): Promise<boolean> {
+	for (const entry of entries) {
+		try {
+			const status = await lstat(entry.sourcePath);
+			if (!status.isFile() || status.isSymbolicLink()) {
+				return true;
+			}
+		} catch (error) {
+			if (isMissingError(error)) {
+				return true;
+			}
+
+			throw error;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Removes public leaves whose recorded source entries are no longer real files.
+ * It intentionally preserves the import and immutable version for later repair.
+ */
+export async function unpublishUnavailableImports({
+	state,
+	generatedLibraryRoot,
+	stagingRoot,
+	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	incompleteSourceContainers = [],
+}: Readonly<{
+	state: ImportState;
+	generatedLibraryRoot: string;
+	stagingRoot: string;
+	versionRoot?: string;
+	incompleteSourceContainers?: readonly string[];
+}>): Promise<void> {
+	await mkdir(versionRoot, { recursive: true });
+	await ensurePublicationRoots(
+		generatedLibraryRoot,
+		stagingRoot,
+		versionRoot,
+	);
+
+	const scheduled: OperationRow[] = [];
+	const existingOperationQuery = state.database.query<
+		{ id: string },
+		[string]
+	>("SELECT id FROM operations WHERE import_id = ?");
+	const excluded = new Set(incompleteSourceContainers);
+
+	for (const current of currentImports(state)) {
+		if (
+			current.availability !== "present" ||
+			excluded.has(current.root_path) ||
+			existingOperationQuery.get(current.import_id) !== null ||
+			!(await hasUnavailableSourceEntries(
+				destinationEntries(state, current.import_id),
+			))
+		) {
+			continue;
+		}
+
+		const existing = existingFor(
+			state,
+			current.root_path,
+			current.logical_release_key,
+		);
+		if (existing === null || existing.destination_path === null) {
+			throw new Error("Published import has no reconciliation state");
+		}
+
+		scheduled.push(
+			createOperation(
+				state,
+				existing,
+				undefined,
+				stagingRoot,
+				versionRoot,
+				"unpublish",
+				existing.destination_path,
+			),
+		);
+	}
+
+	for (const operation of scheduled) {
+		await executeOperation(
+			state,
+			generatedLibraryRoot,
+			stagingRoot,
+			versionRoot,
+			operation,
+		);
+	}
 }
 
 export async function reconcileImports({
@@ -261,40 +362,29 @@ export async function reconcileImports({
 			}
 
 			if (row.availability === "present") {
-				immediate(state, () =>
-					state.database.run(
-						"UPDATE imports SET availability = 'missing' WHERE id = ?",
-						[row.import_id],
+				const existing = existingFor(
+					state,
+					row.root_path,
+					row.logical_release_key,
+				);
+				if (existing === null || existing.destination_path === null) {
+					throw new Error(
+						"Published import has no reconciliation state",
+					);
+				}
+
+				scheduled.push(
+					createOperation(
+						state,
+						existing,
+						undefined,
+						stagingRoot,
+						versionRoot,
+						"unpublish",
+						existing.destination_path,
 					),
 				);
-
-				continue;
 			}
-
-			scheduled.push(
-				createOperation(
-					state,
-					{
-						import_id: row.import_id,
-						destination_path: row.destination_path,
-						version_path: null,
-						manifest_hash: "",
-						availability: "missing",
-					},
-					undefined,
-					stagingRoot,
-					versionRoot,
-					"delete",
-					row.destination_path,
-				),
-			);
-		}
-
-		if (complete && incompleteSourceContainers.length === 0) {
-			state.database.run(
-				"UPDATE reconciliation_state SET required = 0, last_full_scan_at_ns = ? WHERE id = 1",
-				[nowNs()],
-			);
 		}
 	}
 	const additions = scheduled.filter(
@@ -306,15 +396,15 @@ export async function reconcileImports({
 	const repairs = scheduled.filter(
 		(operation) => operation.kind === "repair",
 	).length;
-	const deletions = scheduled.filter(
-		(operation) => operation.kind === "delete",
+	const unpublished = scheduled.filter(
+		(operation) => operation.kind === "unpublish",
 	).length;
 
 	if (scheduled.length === 0) {
 		onProgress?.("No publication operations are needed.");
 	} else {
 		onProgress?.(
-			`Applying ${scheduled.length} publication operation(s): ${additions} add, ${replacements} replace, ${repairs} repair, ${deletions} delete.`,
+			`Applying ${scheduled.length} publication operation(s): ${additions} add, ${replacements} replace, ${repairs} repair, ${unpublished} unpublish.`,
 		);
 	}
 

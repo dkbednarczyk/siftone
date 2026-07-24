@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { observeSource } from "./source-observer";
@@ -35,6 +35,27 @@ describe("source observer", () => {
 
 			expect(first.manifestHash).not.toBe(second.manifestHash);
 			expect(second.discovery.candidates).toEqual([]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test("changes its manifest when ctime changes without changing media contents", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-observer-"));
+		try {
+			const source = join(root, "Album", "01.flac");
+			await mkdir(join(root, "Album"));
+			await writeFile(source, "audio");
+			const first = await observeSource(root);
+			const before = await lstat(source, { bigint: true });
+
+			await chmod(source, 0o600);
+			const after = await lstat(source, { bigint: true });
+			const second = await observeSource(root);
+
+			expect(after.mtimeNs).toBe(before.mtimeNs);
+			expect(after.ctimeNs).not.toBe(before.ctimeNs);
+			expect(second.manifestHash).not.toBe(first.manifestHash);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}

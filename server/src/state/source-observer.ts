@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
+import { join, relative } from "node:path";
 import {
 	type CandidateDiscoveryResult,
 	discoverCandidates,
@@ -10,7 +11,19 @@ export type SourceObservation = Readonly<{
 	complete: boolean;
 	manifestHash: string;
 	issues: readonly string[];
+	incompleteSourceContainers: readonly string[];
 }>;
+
+function sourceContainerForIssue(
+	watchRoot: string,
+	path: string,
+): string | undefined {
+	const [container] = relative(watchRoot, path).split("/");
+
+	return container === undefined || container === "" || container === ".."
+		? undefined
+		: join(watchRoot, container);
+}
 
 async function hashDiscovery(
 	discovery: CandidateDiscoveryResult,
@@ -28,7 +41,9 @@ async function hashDiscovery(
 				);
 			}
 
-			hash.update(`${path}\0${metadata.size}\0${metadata.mtimeNs}\0`);
+			hash.update(
+				`${path}\0${metadata.size}\0${metadata.mtimeNs}\0${metadata.ctimeNs}\0`,
+			);
 		}
 	}
 
@@ -47,20 +62,29 @@ export async function observeSource(
 	const issues = discovery.issues.map(
 		(issue) => `${issue.path}: ${issue.message}`,
 	);
+	const incompleteSourceContainers = new Set(
+		discovery.issues.flatMap((issue) => {
+			const container = sourceContainerForIssue(watchRoot, issue.path);
+
+			return container === undefined ? [] : [container];
+		}),
+	);
+	// Candidate-level limits do not invalidate healthy containers in this scan.
+	let complete = true;
 	let manifestHash = createHash("sha256").digest("hex");
 
-	if (issues.length === 0) {
-		try {
-			manifestHash = await hashDiscovery(discovery);
-		} catch (error) {
-			issues.push(error instanceof Error ? error.message : String(error));
-		}
+	try {
+		manifestHash = await hashDiscovery(discovery);
+	} catch (error) {
+		issues.push(error instanceof Error ? error.message : String(error));
+		complete = false;
 	}
 
 	return {
 		discovery,
-		complete: issues.length === 0,
+		complete,
 		manifestHash,
 		issues,
+		incompleteSourceContainers: [...incompleteSourceContainers].toSorted(),
 	};
 }

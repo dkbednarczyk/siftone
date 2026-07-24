@@ -69,13 +69,14 @@ export const SCHEMA_SQL = `
 		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
 		size INTEGER NOT NULL CHECK (size >= 0),
 		mtime_ns INTEGER NOT NULL,
+		ctime_ns INTEGER NOT NULL,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
 		PRIMARY KEY (import_id, destination_name)
 	) STRICT, WITHOUT ROWID;
 	CREATE TABLE operations (
 		id TEXT PRIMARY KEY CHECK (${UUID_CHECK}),
 		import_id TEXT NOT NULL REFERENCES imports(id) ON DELETE CASCADE,
-		kind TEXT NOT NULL CHECK (kind IN ('add', 'replace', 'delete', 'repair')),
+		kind TEXT NOT NULL CHECK (kind IN ('add', 'replace', 'unpublish', 'repair')),
 		phase TEXT NOT NULL CHECK (phase IN ('planned', 'staged', 'versioned', 'swapped', 'attention_required')),
 		target_destination_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("target_destination_path")}),
 		staging_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("staging_path")}),
@@ -96,14 +97,16 @@ export const SCHEMA_SQL = `
 		source_path TEXT NOT NULL COLLATE BINARY CHECK (${absolutePathCheck("source_path")}),
 		size INTEGER NOT NULL CHECK (size >= 0),
 		mtime_ns INTEGER NOT NULL,
+		ctime_ns INTEGER NOT NULL,
 		kind TEXT NOT NULL CHECK (kind IN ('audio', 'artwork')),
 		PRIMARY KEY (operation_id, destination_name)
 	) STRICT, WITHOUT ROWID;
 	CREATE TABLE reconciliation_state (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
-		required INTEGER NOT NULL CHECK (required IN (0, 1)),
-		last_full_scan_at_ns INTEGER
+		last_reconciled_manifest_hash TEXT CHECK (last_reconciled_manifest_hash IS NULL OR length(last_reconciled_manifest_hash) = 64),
+		last_full_scan_at_ns INTEGER,
+		last_scan_issue TEXT
 	) STRICT;
-	INSERT INTO reconciliation_state VALUES (1, 1, NULL);
+	INSERT INTO reconciliation_state VALUES (1, NULL, NULL, NULL);
 	PRAGMA application_id = ${APPLICATION_ID};
 `;

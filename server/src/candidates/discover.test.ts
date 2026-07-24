@@ -139,19 +139,30 @@ describe("candidate discovery", () => {
 		});
 	});
 
-	test("accepts audio at the depth boundary and reports pruned deeper paths", async () => {
+	test("accepts supported shallow release layouts and rejects deeper paths", async () => {
 		const watchRoot = await makeWatchRoot();
 		const boundaryAlbum = join(watchRoot, "Boundary");
 		const beyondAlbum = join(watchRoot, "Beyond");
-		const boundaryTrack = join(boundaryAlbum, "Disc", "01 Song.flac");
+		const boundaryTrack = join(
+			boundaryAlbum,
+			"Disc",
+			"Artist",
+			"Bonus",
+			"01 Song.flac",
+		);
 		await writeSourceFile(boundaryTrack);
 		await writeSourceFile(
-			join(beyondAlbum, "Disc", "Bonus", "01 Song.flac"),
+			join(
+				beyondAlbum,
+				"Disc",
+				"Artist",
+				"Bonus",
+				"Too Deep",
+				"01 Song.flac",
+			),
 		);
 
-		const result = await discoverCandidates(watchRoot, {
-			maxDepth: 2,
-		});
+		const result = await discoverCandidates(watchRoot);
 
 		expect(result.candidates).toEqual([
 			{
@@ -162,34 +173,8 @@ describe("candidate discovery", () => {
 		]);
 		expect(result.issues).toEqual([
 			expect.objectContaining({
-				path: join(beyondAlbum, "Disc", "Bonus"),
-				message: expect.stringContaining("depth limit (2)"),
-			}),
-		]);
-	});
-
-	test("reports entry-budget exhaustion without dropping discovered audio", async () => {
-		const watchRoot = await makeWatchRoot();
-		const album = join(watchRoot, "Album");
-		const firstTrack = join(album, "01 First.flac");
-		await writeSourceFile(firstTrack);
-		await writeSourceFile(join(album, "02 Second.flac"));
-
-		const result = await discoverCandidates(watchRoot, {
-			maxEntries: 1,
-		});
-
-		expect(result.candidates).toEqual([
-			{
-				root: album,
-				audioPaths: [firstTrack],
-				imagePaths: [],
-			},
-		]);
-		expect(result.issues).toEqual([
-			expect.objectContaining({
-				path: album,
-				message: expect.stringContaining("entry limit (1)"),
+				path: join(beyondAlbum, "Disc", "Artist", "Bonus", "Too Deep"),
+				message: expect.stringContaining("depth limit (4)"),
 			}),
 		]);
 	});
@@ -253,15 +238,6 @@ describe("candidate discovery", () => {
 				imagePaths: [],
 			},
 		]);
-	});
-
-	test("rejects invalid traversal limits", async () => {
-		await expect(
-			discoverCandidates("/unused", { maxDepth: 0 }),
-		).rejects.toThrow(RangeError);
-		await expect(
-			discoverCandidates("/unused", { maxEntries: 1.5 }),
-		).rejects.toThrow(RangeError);
 	});
 
 	test("propagates watch-root read errors", async () => {

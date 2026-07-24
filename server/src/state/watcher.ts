@@ -4,6 +4,7 @@ export type ReconciliationStatus = Readonly<{
 	lastFinishedAt?: string;
 	lastError?: string;
 	nextRunAt?: string;
+	reason?: string;
 }>;
 
 export type ReconciliationScheduler = Readonly<{

@@ -175,9 +175,10 @@ reported for review.
 - A single-flight timer scans the complete source tree at the configured cadence.
   It never creates recursive filesystem watches; timer ticks and manual rescan
   requests coalesce rather than overlapping.
-- A tracked source absent from two consecutive complete scans is removed through a
-  journaled delete operation. Permission/I/O errors and incomplete scans do not
-  authorize that deletion.
+- When a complete scan proves a recorded source file is absent, Siftone
+  journaledly removes that release's owned public leaf immediately. It retains
+  the import and immutable version so a returning source can be republished;
+  incomplete scans and I/O errors preserve existing output.
 - Folder path/name is candidate identity. A rename/move is a missing old candidate
   plus a new candidate; no inode/device tracking.
 - Immediate notifications, retry policy, and review resolution remain planned.
@@ -201,8 +202,8 @@ published or trusted as metadata.
   absolute `/`-separated paths, `BINARY`-compared by SQLite, and are rejected
   when relative, traversing, empty, or backslash-separated. Source-file lookup
   is the `source_files.source_path` primary key. Frozen operation and destination
-  entries retain the `size + mtime_ns` fingerprints used for staging and drift
-  validation.
+  entries retain the `size + mtime_ns + ctime_ns` fingerprints used for staging
+  and drift validation.
 - Every unresolved operation owns one import and claims every old/new destination
   path. Its phase and error message are the only persisted failure state; its
   filesystem checkpoint is a recovery hint. Restart inspects staging, destination,
@@ -210,8 +211,11 @@ published or trusted as metadata.
 - Siftone does not recursively watch source directories. Recursive inotify watches
   consume one watch per directory and can exceed Linux watch limits. Instead, a
   bounded complete directory traversal is reconciled on a timer; this deliberately
-  trades notification latency for predictable resource use. Root-only listings were
-  rejected because supported candidate directories may be modified in place.
+  trades notification latency for predictable resource use. Each immediate source
+  container permits at most three nested directories and 10,000 entries; over-limit
+  containers are reported and excluded without blocking other releases. Root-only
+  listings were rejected because supported candidate directories may be modified in
+  place.
 - Keep boot-critical paths/network settings in a server-owned TOML file. Future
   CLI-editable runtime settings will live in SQLite. Daily backups are
   self-contained snapshots named by UTC date.

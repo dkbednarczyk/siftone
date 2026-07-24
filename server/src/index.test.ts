@@ -218,7 +218,7 @@ describe("server command", () => {
 			generatedLibraryRoot,
 		});
 		state.database.run(
-			"UPDATE reconciliation_state SET last_full_scan_at_ns = 1 WHERE id = 1",
+			"UPDATE reconciliation_state SET last_reconciled_manifest_hash = '0000000000000000000000000000000000000000000000000000000000000000', last_full_scan_at_ns = 1 WHERE id = 1",
 		);
 		state.close();
 

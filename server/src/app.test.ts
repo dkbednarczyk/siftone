@@ -46,6 +46,25 @@ describe("server app", () => {
 		expect(requested).toBe(true);
 	});
 
+	test("includes a concise reconciliation reason when work is blocked", async () => {
+		const app = createApp(undefined, () => ({
+			status: () => ({
+				state: "idle",
+				reason: "source snapshot awaiting confirmation",
+			}),
+			request: () => ({ state: "queued" }),
+		}));
+
+		const response = await app.handle(
+			new Request("http://localhost/api/v1/reconciliation/status"),
+		);
+
+		expect(await response.json()).toEqual({
+			state: "idle",
+			reason: "source snapshot awaiting confirmation",
+		});
+	});
+
 	test("returns a stable JSON error for unknown routes", async () => {
 		const response = await createApp().handle(
 			new Request("http://localhost/api/v1/unknown"),

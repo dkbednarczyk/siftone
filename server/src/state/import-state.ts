@@ -26,8 +26,11 @@ export type ImportState = Readonly<{
 	isTabulaRasa: boolean;
 	close(): void;
 	isDegraded(): boolean;
-	isReconciliationRequired(): boolean;
-	markReconciliationRequired(): void;
+	reconciliationReason(watchRoot: string): string | undefined;
+	isManifestReconciled(watchRoot: string, manifestHash: string): boolean;
+	markManifestReconciled(watchRoot: string, manifestHash: string): void;
+	recordScanIssue(message: string): void;
+	clearScanIssue(): void;
 	resetSourceObservationWindow(): void;
 	observeSourceManifest(
 		options: Readonly<{
@@ -190,7 +193,7 @@ export async function openImportState({
 	const isTabulaRasa =
 		database
 			.query<{ is_tabula_rasa: number }, []>(
-				"SELECT NOT EXISTS(SELECT 1 FROM imports) AND NOT EXISTS(SELECT 1 FROM operations) AND (SELECT last_full_scan_at_ns FROM reconciliation_state WHERE id = 1) IS NULL AS is_tabula_rasa",
+				"SELECT NOT EXISTS(SELECT 1 FROM imports) AND NOT EXISTS(SELECT 1 FROM operations) AND (SELECT last_reconciled_manifest_hash FROM reconciliation_state WHERE id = 1) IS NULL AS is_tabula_rasa",
 			)
 			.get()?.is_tabula_rasa === 1;
 
@@ -199,9 +202,32 @@ export async function openImportState({
 		database,
 		isTabulaRasa,
 		close: () => database.close(),
-		markReconciliationRequired: () => {
+		isManifestReconciled: (watchRoot, manifestHash) =>
+			database
+				.query<{ reconciled: number }, [string, string, string]>(
+					"SELECT last_reconciled_manifest_hash = ? AS reconciled FROM reconciliation_state WHERE id = 1 AND EXISTS(SELECT 1 FROM source_observations WHERE root_path = ? AND confirmed_manifest_hash = ?)",
+				)
+				.get(manifestHash, watchRoot, manifestHash)?.reconciled === 1,
+		markManifestReconciled: (watchRoot, manifestHash) => {
 			database.run(
-				"UPDATE reconciliation_state SET required = 1 WHERE id = 1",
+				"UPDATE reconciliation_state SET last_reconciled_manifest_hash = ?, last_full_scan_at_ns = ? WHERE id = 1 AND EXISTS(SELECT 1 FROM source_observations WHERE root_path = ? AND confirmed_manifest_hash = ?)",
+				[
+					manifestHash,
+					BigInt(Date.now()) * 1_000_000n,
+					watchRoot,
+					manifestHash,
+				],
+			);
+		},
+		recordScanIssue: (message) => {
+			database.run(
+				"UPDATE reconciliation_state SET last_scan_issue = ? WHERE id = 1",
+				[message],
+			);
+		},
+		clearScanIssue: () => {
+			database.run(
+				"UPDATE reconciliation_state SET last_scan_issue = NULL WHERE id = 1",
 			);
 		},
 		resetSourceObservationWindow: () => {
@@ -246,14 +272,65 @@ export async function openImportState({
 		isDegraded: () =>
 			database
 				.query<{ degraded: number }, []>(
-					"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') OR EXISTS(SELECT 1 FROM reconciliation_state WHERE id = 1 AND required = 1) AS degraded",
+					"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') OR EXISTS(SELECT 1 FROM reconciliation_state WHERE id = 1 AND last_scan_issue IS NOT NULL) AS degraded",
 				)
 				.get()?.degraded === 1,
-		isReconciliationRequired: () =>
-			database
-				.query<{ required: number }, []>(
-					"SELECT required OR EXISTS(SELECT 1 FROM operations) AS required FROM reconciliation_state WHERE id = 1",
+		reconciliationReason: (watchRoot) => {
+			const attentionRequired =
+				database
+					.query<{ required: number }, []>(
+						"SELECT EXISTS(SELECT 1 FROM operations WHERE phase = 'attention_required') AS required",
+					)
+					.get()?.required === 1;
+			if (attentionRequired) {
+				return "publication operation requires review";
+			}
+
+			const scanIssue = database
+				.query<{ last_scan_issue: string | null }, []>(
+					"SELECT last_scan_issue FROM reconciliation_state WHERE id = 1",
 				)
-				.get()?.required === 1,
+				.get()?.last_scan_issue;
+			if (scanIssue !== null && scanIssue !== undefined) {
+				return scanIssue;
+			}
+
+			const observation = database
+				.query<
+					{
+						confirmed_manifest_hash: string | null;
+						pending_manifest_hash: string | null;
+						last_reconciled_manifest_hash: string | null;
+					},
+					[string]
+				>(`
+					SELECT so.confirmed_manifest_hash, so.pending_manifest_hash, rs.last_reconciled_manifest_hash
+					FROM reconciliation_state rs
+					LEFT JOIN source_observations so ON so.root_path = ?
+					WHERE rs.id = 1
+				`)
+				.get(watchRoot);
+			if (observation?.pending_manifest_hash !== null) {
+				return "source snapshot awaiting confirmation";
+			}
+			if (
+				observation?.confirmed_manifest_hash !== null &&
+				observation?.confirmed_manifest_hash !==
+					observation.last_reconciled_manifest_hash
+			) {
+				return "source reconciliation pending";
+			}
+
+			const pendingOperation =
+				database
+					.query<{ pending: number }, []>(
+						"SELECT EXISTS(SELECT 1 FROM operations) AS pending",
+					)
+					.get()?.pending === 1;
+
+			return pendingOperation
+				? "publication operation pending"
+				: undefined;
+		},
 	};
 }

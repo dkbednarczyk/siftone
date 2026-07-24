@@ -8,6 +8,7 @@ export type SourceEntry = Readonly<{
 	destinationName: string;
 	size: bigint;
 	mtimeNs: bigint;
+	ctimeNs: bigint;
 	kind: "audio" | "artwork";
 }>;
 
@@ -25,7 +26,7 @@ export type Desired = {
 export type OperationRow = {
 	id: string;
 	import_id: string;
-	kind: "add" | "replace" | "delete" | "repair";
+	kind: "add" | "replace" | "unpublish" | "repair";
 	phase: ImportOperationPhase;
 	target_destination_path: string;
 	staging_path: string;

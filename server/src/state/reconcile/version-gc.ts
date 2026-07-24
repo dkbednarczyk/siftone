@@ -50,7 +50,7 @@ export async function collectRetiredVersions(
 			}
 		}
 	} catch {
-		state.markReconciliationRequired();
+		state.recordScanIssue("Unable to inspect generated-library output");
 		return;
 	}
 
@@ -106,7 +106,7 @@ export async function collectRetiredVersions(
 				[candidate.id],
 			);
 		} catch {
-			state.markReconciliationRequired();
+			state.recordScanIssue("Unable to remove a retired album version");
 		}
 	}
 }

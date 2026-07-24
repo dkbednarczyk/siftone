@@ -58,6 +58,7 @@ describe("library state schema", () => {
 				"source_path",
 				"size",
 				"mtime_ns",
+				"ctime_ns",
 				"kind",
 			]);
 			expect(columns(database, "album_versions")).toEqual([
@@ -79,6 +80,15 @@ describe("library state schema", () => {
 				"error_message",
 				"created_at_ns",
 			]);
+			expect(columns(database, "operation_entries")).toEqual([
+				"operation_id",
+				"destination_name",
+				"source_path",
+				"size",
+				"mtime_ns",
+				"ctime_ns",
+				"kind",
+			]);
 			expect(columns(database, "source_observations")).toEqual([
 				"root_path",
 				"confirmed_manifest_hash",
@@ -87,8 +97,9 @@ describe("library state schema", () => {
 			]);
 			expect(columns(database, "reconciliation_state")).toEqual([
 				"id",
-				"required",
+				"last_reconciled_manifest_hash",
 				"last_full_scan_at_ns",
+				"last_scan_issue",
 			]);
 		} finally {
 			database.close();

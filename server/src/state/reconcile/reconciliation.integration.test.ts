@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublicationInput } from "../../publication/plan";
 import { openImportState } from "../import-state";
-import { reconcileImports } from "./index";
+import { reconcileImports, unpublishUnavailableImports } from "./index";
 
 describe("journaled reconciliation", () => {
-	test("publishes then removes a missing release after two complete scans", async () => {
+	test("unpublishes a missing release and restores it when its source returns", async () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-reconcile-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
@@ -109,7 +109,13 @@ describe("journaled reconciliation", () => {
 				).toBe(true);
 				expect(await readlink(destinationPath)).toBe(sourcePath);
 
-				await reconcile([]);
+				await rm(sourcePath);
+				await unpublishUnavailableImports({
+					state,
+					generatedLibraryRoot,
+					stagingRoot,
+					versionRoot,
+				});
 				expect(
 					state.database
 						.query<{ availability: string }, [string]>(
@@ -117,11 +123,6 @@ describe("journaled reconciliation", () => {
 						)
 						.get(imported.id),
 				).toEqual({ availability: "missing" });
-				expect((await lstat(destinationPath)).isSymbolicLink()).toBe(
-					true,
-				);
-
-				await reconcile([]);
 				await expect(lstat(destinationPath)).rejects.toThrow("ENOENT");
 				expect(
 					state.database
@@ -129,14 +130,27 @@ describe("journaled reconciliation", () => {
 							"SELECT COUNT(*) AS count FROM imports",
 						)
 						.get(),
-				).toEqual({ count: 0 });
+				).toEqual({ count: 1 });
 				expect(
 					state.database
 						.query<{ count: number }, []>(
-							"SELECT COUNT(*) AS count FROM album_versions WHERE state = 'retired' AND retired_at_ns IS NOT NULL",
+							"SELECT COUNT(*) AS count FROM album_versions WHERE state = 'current'",
 						)
 						.get(),
 				).toEqual({ count: 1 });
+
+				await writeFile(sourcePath, "audio");
+				await reconcile([input]);
+				expect(
+					state.database
+						.query<{ availability: string }, [string]>(
+							"SELECT availability FROM imports WHERE id = ?",
+						)
+						.get(imported.id),
+				).toEqual({ availability: "present" });
+				expect((await lstat(destinationPath)).isSymbolicLink()).toBe(
+					true,
+				);
 			} finally {
 				state.close();
 			}

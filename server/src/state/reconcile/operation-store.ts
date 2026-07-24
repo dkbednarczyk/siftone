@@ -70,7 +70,7 @@ export function createOperation(
 	}
 
 	const timestamp = nowNs();
-	const versionId = kind === "delete" ? null : randomUUID();
+	const versionId = kind === "unpublish" ? null : randomUUID();
 	const versionPath =
 		versionId === null ? null : join(versionRoot, `operation-${id}`);
 	immediate(state, () => {
@@ -148,13 +148,14 @@ export function createOperation(
 		if (desired !== undefined) {
 			for (const entry of desired.entries) {
 				state.database.run(
-					"INSERT INTO operation_entries (operation_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
+					"INSERT INTO operation_entries (operation_id, destination_name, source_path, size, mtime_ns, ctime_ns, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
 					[
 						id,
 						entry.destinationName,
 						entry.sourcePath,
 						entry.size,
 						entry.mtimeNs,
+						entry.ctimeNs,
 						entry.kind,
 					],
 				);

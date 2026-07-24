@@ -14,6 +14,7 @@ import {
 	hasPublishedOutputDrift,
 	reconcileImports,
 	recoverInterruptedOperations,
+	unpublishUnavailableImports,
 } from "./state/reconcile";
 import { collectRetiredVersions } from "./state/reconcile/version-gc";
 import { observeSource } from "./state/source-observer";
@@ -51,7 +52,23 @@ async function runServer(config: ServerConfig): Promise<void> {
 
 	const server = createApp(
 		() => (ready && state?.isDegraded() ? "degraded" : "ok"),
-		() => watcher,
+		() => {
+			const activeWatcher = watcher;
+			if (activeWatcher === undefined) {
+				return undefined;
+			}
+
+			return {
+				status: () => ({
+					...activeWatcher.status(),
+					reason: state?.reconciliationReason(config.paths.watchRoot),
+				}),
+				request: () => ({
+					...activeWatcher.request(),
+					reason: state?.reconciliationReason(config.paths.watchRoot),
+				}),
+			};
+		},
 	).listen({ hostname: "127.0.0.1", port: config.port });
 
 	console.info(
@@ -86,13 +103,26 @@ async function runServer(config: ServerConfig): Promise<void> {
 		console.info(`Observing source library at ${config.paths.watchRoot}.`);
 		const startupObservation = await observeSource(config.paths.watchRoot);
 		let bypassInitialConfirmation = false;
+		let requestStartupReconciliation = false;
 
 		if (!startupObservation.complete) {
 			console.info(
 				"Initial source observation is incomplete; reconciliation will retry at the next interval.",
 			);
-			importState.markReconciliationRequired();
+			importState.recordScanIssue(
+				startupObservation.issues[0] ??
+					"Initial source observation is incomplete",
+			);
 		} else {
+			importState.clearScanIssue();
+			await unpublishUnavailableImports({
+				state: importState,
+				generatedLibraryRoot: config.paths.generatedLibraryRoot,
+				stagingRoot: config.paths.stagingRoot,
+				versionRoot: config.paths.versionRoot,
+				incompleteSourceContainers:
+					startupObservation.incompleteSourceContainers,
+			});
 			const startupManifest = importState.observeSourceManifest({
 				watchRoot: config.paths.watchRoot,
 				manifestHash: startupObservation.manifestHash,
@@ -100,23 +130,31 @@ async function runServer(config: ServerConfig): Promise<void> {
 			});
 			bypassInitialConfirmation = importState.isTabulaRasa;
 			if (bypassInitialConfirmation) {
-				importState.markReconciliationRequired();
 				console.info(
 					"No existing library state; starting the first complete library build immediately.",
 				);
 			} else if (
 				startupManifest.confirmed &&
 				startupManifest.unchanged &&
-				!importState.isReconciliationRequired()
+				importState.isManifestReconciled(
+					config.paths.watchRoot,
+					startupObservation.manifestHash,
+				)
 			) {
 				console.info(
 					"Source snapshot is unchanged; no reconciliation work is pending.",
 				);
 			} else {
-				importState.markReconciliationRequired();
-				console.info(
-					`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
-				);
+				if (startupManifest.confirmed) {
+					requestStartupReconciliation = true;
+					console.info(
+						"Initial source snapshot is confirmed but has not been reconciled; reconciling now.",
+					);
+				} else {
+					console.info(
+						`Initial source snapshot recorded; waiting ${config.reconciliationIntervalSeconds} seconds to confirm it before importing.`,
+					);
+				}
 			}
 		}
 
@@ -131,9 +169,22 @@ async function runServer(config: ServerConfig): Promise<void> {
 					(await observeSource(config.paths.watchRoot));
 				reusableObservation = undefined;
 				if (!observation.complete) {
-					importState.markReconciliationRequired();
+					importState.recordScanIssue(
+						observation.issues[0] ??
+							"Source observation is incomplete",
+					);
 					return;
 				}
+				importState.clearScanIssue();
+
+				await unpublishUnavailableImports({
+					state: importState,
+					generatedLibraryRoot: config.paths.generatedLibraryRoot,
+					stagingRoot: config.paths.stagingRoot,
+					versionRoot: config.paths.versionRoot,
+					incompleteSourceContainers:
+						observation.incompleteSourceContainers,
+				});
 
 				const sourceManifest = importState.observeSourceManifest({
 					watchRoot: config.paths.watchRoot,
@@ -141,7 +192,6 @@ async function runServer(config: ServerConfig): Promise<void> {
 					minimumAgeMs: config.reconciliationIntervalSeconds * 1_000,
 				});
 				if (!sourceManifest.confirmed && !bypassInitialConfirmation) {
-					importState.markReconciliationRequired();
 					console.info(
 						"Source snapshot changed; waiting for the next interval to confirm it before importing.",
 					);
@@ -164,7 +214,10 @@ async function runServer(config: ServerConfig): Promise<void> {
 				if (
 					!startingFirstBuild &&
 					sourceManifest.unchanged &&
-					!importState.isReconciliationRequired() &&
+					importState.isManifestReconciled(
+						config.paths.watchRoot,
+						observation.manifestHash,
+					) &&
 					!(await hasPublishedOutputDrift({
 						state: importState,
 						versionRoot: config.paths.versionRoot,
@@ -196,7 +249,11 @@ async function runServer(config: ServerConfig): Promise<void> {
 				);
 
 				if (next.hasIssues) {
-					importState.markReconciliationRequired();
+					importState.recordScanIssue(
+						next.discoveryIssues[0] === undefined
+							? "Source preparation has unresolved candidate issues"
+							: `${next.discoveryIssues[0].path}: ${next.discoveryIssues[0].message}`,
+					);
 				}
 
 				console.info(
@@ -215,6 +272,12 @@ async function runServer(config: ServerConfig): Promise<void> {
 					incompleteSourceContainers: next.incompleteSourceContainers,
 					onProgress: console.info,
 				});
+				if (!next.hasIssues) {
+					importState.markManifestReconciled(
+						config.paths.watchRoot,
+						observation.manifestHash,
+					);
+				}
 
 				console.info(
 					`Took ${prettyMilliseconds(
@@ -228,11 +291,14 @@ async function runServer(config: ServerConfig): Promise<void> {
 					)} to reconcile ${next.plans.length} desired import(s) from complete source scan.`,
 				);
 			},
-			onFailure: () => importState.markReconciliationRequired(),
+			onFailure: (error) =>
+				importState.recordScanIssue(
+					`Reconciliation failed: ${error.message}`,
+				),
 		});
 
 		watcher = sourceWatcher;
-		if (bypassInitialConfirmation) {
+		if (bypassInitialConfirmation || requestStartupReconciliation) {
 			sourceWatcher.request();
 		}
 		ready = true;

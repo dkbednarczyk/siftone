@@ -29,7 +29,11 @@ async function stage(entries: readonly Entry[], path: string): Promise<void> {
 				`Publication entry is not a real file: ${entry.sourcePath}`,
 			);
 		}
-		if (status.size !== entry.size || status.mtimeNs !== entry.mtimeNs) {
+		if (
+			status.size !== entry.size ||
+			status.mtimeNs !== entry.mtimeNs ||
+			status.ctimeNs !== entry.ctimeNs
+		) {
 			throw new Error(
 				`Source changed after operation planning: ${entry.sourcePath}`,
 			);
@@ -68,25 +72,15 @@ function priorVersion(
 		.get(importId);
 }
 
-function finalizeDelete(
-	state: ImportState,
-	operation: OperationRow,
-	prior: PriorVersion,
-): void {
+function finalizeUnpublish(state: ImportState, operation: OperationRow): void {
 	immediate(state, () => {
 		state.database.run(
-			"UPDATE album_versions SET state = 'retired', retired_at_ns = ? WHERE id = ? AND state = 'current'",
-			[nowNs(), prior.version_id],
+			"UPDATE imports SET availability = 'missing' WHERE id = ?",
+			[operation.import_id],
 		);
 		state.database.run("DELETE FROM operations WHERE id = ?", [
 			operation.id,
 		]);
-		state.database.run("DELETE FROM imports WHERE id = ?", [
-			operation.import_id,
-		]);
-		state.database.run(
-			"DELETE FROM source_containers WHERE id NOT IN (SELECT DISTINCT container_id FROM imports)",
-		);
 	});
 }
 
@@ -125,13 +119,14 @@ function finalizePublication(
 		);
 		for (const entry of entries) {
 			state.database.run(
-				"INSERT INTO destination_entries (import_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO destination_entries (import_id, destination_name, source_path, size, mtime_ns, ctime_ns, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				[
 					operation.import_id,
 					entry.destinationName,
 					entry.sourcePath,
 					entry.size,
 					entry.mtimeNs,
+					entry.ctimeNs,
 					entry.kind,
 				],
 			);
@@ -197,9 +192,11 @@ export async function executeOperation(
 	const prior = priorVersion(state, operation.import_id);
 
 	try {
-		if (operation.kind === "delete") {
+		if (operation.kind === "unpublish") {
 			if (prior === null) {
-				throw new Error("Delete operation has no published version");
+				throw new Error(
+					"Unpublication operation has no published version",
+				);
 			}
 			if (operation.phase === "planned") {
 				updatePhase(state, operation.id, "staged");
@@ -215,7 +212,7 @@ export async function executeOperation(
 						))
 					) {
 						throw new Error(
-							`Refusing to delete unowned leaf: ${prior.destination_path}`,
+							`Refusing to unpublish unowned leaf: ${prior.destination_path}`,
 						);
 					}
 					await rm(prior.destination_path, { force: false });
@@ -224,7 +221,7 @@ export async function executeOperation(
 				operation.phase = "swapped";
 			}
 			if (operation.phase === "swapped") {
-				finalizeDelete(state, operation, prior);
+				finalizeUnpublish(state, operation);
 			}
 
 			return;
@@ -282,7 +279,8 @@ export async function executeOperation(
 							prior.destination_path,
 							prior.version_path,
 							versionRoot,
-						))
+						)) &&
+						!(await isMissing(prior.destination_path))
 					) {
 						throw new Error(
 							`Refusing to replace unowned leaf: ${prior.destination_path}`,

@@ -5,13 +5,8 @@ import { extname, join } from "node:path";
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([".flac", ".mp3"]);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
 
-const DEFAULT_MAX_DEPTH = 8;
-const DEFAULT_MAX_ENTRIES = 10_000;
-
-export type CandidateDiscoveryLimits = Readonly<{
-	maxDepth?: number;
-	maxEntries?: number;
-}>;
+const MAX_DEPTH = 4;
+const MAX_ENTRIES = 10_000;
 
 export type CandidateDiscoveryIssue = Readonly<{
 	path: string;
@@ -54,29 +49,9 @@ function isSupportedImageFile(path: string): boolean {
 	return SUPPORTED_IMAGE_EXTENSIONS.has(extname(path).toLowerCase());
 }
 
-function resolveLimit(value: number | undefined, fallback: number): number {
-	const limit = value ?? fallback;
-
-	if (!Number.isSafeInteger(limit) || limit < 1) {
-		throw new RangeError("Discovery limits must be positive safe integers");
-	}
-
-	return limit;
-}
-
-function resolveLimits(
-	limits: CandidateDiscoveryLimits,
-): Required<CandidateDiscoveryLimits> {
-	return {
-		maxDepth: resolveLimit(limits.maxDepth, DEFAULT_MAX_DEPTH),
-		maxEntries: resolveLimit(limits.maxEntries, DEFAULT_MAX_ENTRIES),
-	};
-}
-
 async function discoverSourcePaths(
 	directory: string,
 	depth: number,
-	limits: Required<CandidateDiscoveryLimits>,
 	budget: DiscoveryBudget,
 	issues: CandidateDiscoveryIssue[],
 ): Promise<Readonly<{ audioPaths: string[]; imagePaths: string[] }>> {
@@ -98,11 +73,11 @@ async function discoverSourcePaths(
 	);
 
 	for (const entry of sortedEntries) {
-		if (budget.entries >= limits.maxEntries) {
+		if (budget.entries >= MAX_ENTRIES) {
 			if (!budget.limitReported) {
 				issues.push({
 					path: directory,
-					message: `Discovery entry limit (${limits.maxEntries}) reached; remaining paths were not scanned`,
+					message: `Discovery entry limit (${MAX_ENTRIES}) reached; remaining paths were not scanned`,
 				});
 
 				budget.limitReported = true;
@@ -145,10 +120,10 @@ async function discoverSourcePaths(
 		}
 
 		if (kind === "directory") {
-			if (depth + 1 >= limits.maxDepth) {
+			if (depth + 1 >= MAX_DEPTH) {
 				issues.push({
 					path,
-					message: `Discovery depth limit (${limits.maxDepth}) reached; not scanning`,
+					message: `Discovery depth limit (${MAX_DEPTH}) reached; not scanning`,
 				});
 				continue;
 			}
@@ -156,7 +131,6 @@ async function discoverSourcePaths(
 			const nested = await discoverSourcePaths(
 				path,
 				depth + 1,
-				limits,
 				budget,
 				issues,
 			);
@@ -176,15 +150,10 @@ async function discoverSourcePaths(
 }
 
 /** Discovers one known immediate source container without reading siblings. */
-export async function discoverCandidate(
-	root: string,
-	limits: CandidateDiscoveryLimits = {},
-): Promise<{
+export async function discoverCandidate(root: string): Promise<{
 	candidate?: DiscoveredCandidate;
 	issues: CandidateDiscoveryIssue[];
 }> {
-	const resolvedLimits = resolveLimits(limits);
-
 	const issues: CandidateDiscoveryIssue[] = [];
 	let status: Stats;
 
@@ -208,7 +177,6 @@ export async function discoverCandidate(
 	const paths = await discoverSourcePaths(
 		root,
 		0,
-		resolvedLimits,
 		{ entries: 0, limitReported: false },
 		issues,
 	);
@@ -231,10 +199,7 @@ export async function discoverCandidate(
  */
 export async function discoverCandidates(
 	watchRoot: string,
-	limits: CandidateDiscoveryLimits = {},
 ): Promise<CandidateDiscoveryResult> {
-	const resolvedLimits = resolveLimits(limits);
-
 	const entries = await readdir(watchRoot, { withFileTypes: true });
 
 	const roots = entries
@@ -246,11 +211,11 @@ export async function discoverCandidates(
 	const issues: CandidateDiscoveryIssue[] = [];
 
 	for (const root of roots) {
-		const result = await discoverCandidate(root, resolvedLimits);
+		const result = await discoverCandidate(root);
 
 		issues.push(...result.issues);
 
-		if (result.candidate !== undefined) {
+		if (result.issues.length === 0 && result.candidate !== undefined) {
 			candidates.push(result.candidate);
 		}
 	}

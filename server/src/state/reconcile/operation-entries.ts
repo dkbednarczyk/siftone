@@ -13,6 +13,7 @@ type StoredEntry = Readonly<{
 	root_path: string;
 	size: bigint;
 	mtime_ns: bigint;
+	ctime_ns: bigint;
 	kind: "audio" | "artwork";
 }>;
 
@@ -41,6 +42,7 @@ function storedEntriesToEntries(rows: readonly StoredEntry[]): Entry[] {
 			destinationName: row.destination_name,
 			size: row.size,
 			mtimeNs: row.mtime_ns,
+			ctimeNs: row.ctime_ns,
 			kind: row.kind,
 		};
 	});
@@ -52,7 +54,7 @@ export function operationEntries(
 ): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.kind
+		SELECT oe.destination_name, oe.source_path, sc.root_path, oe.size, oe.mtime_ns, oe.ctime_ns, oe.kind
 		FROM operation_entries oe
 		JOIN operations o ON o.id = oe.operation_id
 		JOIN source_files sf ON sf.source_path = oe.source_path AND sf.import_id = o.import_id
@@ -72,7 +74,7 @@ export function destinationEntries(
 ): Entry[] {
 	const rows = bigintRows<StoredEntry, [string]>(
 		state.database.query<StoredEntry, [string]>(`
-		SELECT de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.kind
+		SELECT de.destination_name, de.source_path, sc.root_path, de.size, de.mtime_ns, de.ctime_ns, de.kind
 		FROM destination_entries de
 		JOIN source_files sf ON sf.source_path = de.source_path AND sf.import_id = de.import_id
 		JOIN imports i ON i.id = sf.import_id
