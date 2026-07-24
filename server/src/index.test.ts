@@ -1,17 +1,28 @@
 import { describe, expect, test } from "bun:test";
+import { execFile } from "node:child_process";
 import {
 	access,
+	lstat,
 	mkdir,
 	mkdtemp,
 	readdir,
+	readlink,
 	rm,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServerCommand, type ServerCommandOptions } from "./index";
+import { promisify } from "node:util";
+import type { ServerConfig } from "./config";
+import {
+	createServerCommand,
+	runOneShot,
+	type ServerCommandOptions,
+} from "./index";
 import { createDailyBackup } from "./state/backup";
 import { DATABASE_FILE, openImportState } from "./state/import-state";
+
+const execFileAsync = promisify(execFile);
 
 function parseArguments(argv: string[]): ServerCommandOptions {
 	const command = createServerCommand()
@@ -19,6 +30,31 @@ function parseArguments(argv: string[]): ServerCommandOptions {
 		.exitOverride();
 	command.parse(argv, { from: "user" });
 	return command.opts<ServerCommandOptions>();
+}
+
+async function createTaggedFlac(path: string): Promise<void> {
+	await execFileAsync("ffmpeg", [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		"anullsrc=r=44100:cl=mono",
+		"-t",
+		"0.1",
+		"-c:a",
+		"flac",
+		path,
+	]);
+	await execFileAsync("metaflac", [
+		"--remove-all-tags",
+		"--set-tag=TITLE=Song",
+		"--set-tag=ARTIST=Artist",
+		"--set-tag=ALBUM=Album",
+		"--set-tag=TRACKNUMBER=1",
+		path,
+	]);
 }
 
 async function readUntil(
@@ -85,6 +121,10 @@ describe("server command", () => {
 		expect(parseArguments(["--backup", "backups/imports.sqlite"])).toEqual({
 			backup: "backups/imports.sqlite",
 		});
+	});
+
+	test("selects one-shot mode from root options", () => {
+		expect(parseArguments(["--once"])).toEqual({ once: true });
 	});
 
 	test("restores the snapshot supplied by the backup option", async () => {
@@ -316,6 +356,73 @@ describe("server command", () => {
 				await child.exited;
 			}
 
+			await rm(root, { force: true, recursive: true });
+		}
+	});
+
+	test("one-shot reconciliation publishes and unpublishes a release", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-once-"));
+		const watchRoot = join(root, "watch");
+		const sourceRoot = join(watchRoot, "Album Source");
+		const sourcePath = join(sourceRoot, "01.flac");
+		const generatedLibraryRoot = join(root, "generated");
+		const stagingRoot = join(root, "staging");
+		const versionRoot = join(root, "versions");
+		const stateRoot = join(root, "state");
+		const backupRoot = join(root, "backups");
+		const publicAlbumPath = join(generatedLibraryRoot, "Artist", "Album");
+		const publicTrackPath = join(publicAlbumPath, "01 Song.flac");
+		const config: ServerConfig = {
+			configPath: join(root, "config.toml"),
+			port: 3000,
+			reconciliationIntervalSeconds: 300,
+			sourceStabilitySeconds: 1,
+			paths: {
+				watchRoot,
+				generatedLibraryRoot,
+				stagingRoot,
+				versionRoot,
+				stateRoot,
+				backupRoot,
+			},
+			versionRetentionHours: 24,
+		};
+
+		try {
+			await Promise.all([
+				mkdir(sourceRoot, { recursive: true }),
+				mkdir(generatedLibraryRoot),
+				mkdir(stagingRoot),
+				mkdir(versionRoot),
+				mkdir(stateRoot),
+			]);
+			await createTaggedFlac(sourcePath);
+
+			await runOneShot(config);
+			expect((await lstat(publicAlbumPath)).isSymbolicLink()).toBe(true);
+			expect(await readlink(publicTrackPath)).toBe(sourcePath);
+
+			await rm(sourcePath);
+			await runOneShot(config);
+			await expect(lstat(publicAlbumPath)).rejects.toThrow("ENOENT");
+
+			const state = await openImportState({
+				stateRoot,
+				generatedLibraryRoot,
+				versionRoot,
+			});
+			try {
+				expect(
+					state.database
+						.query<{ availability: string }, []>(
+							"SELECT availability FROM imports",
+						)
+						.get(),
+				).toEqual({ availability: "missing" });
+			} finally {
+				state.close();
+			}
+		} finally {
 			await rm(root, { force: true, recursive: true });
 		}
 	});

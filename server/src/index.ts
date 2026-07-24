@@ -26,6 +26,7 @@ import {
 export type ServerCommandOptions = Readonly<{
 	config?: string;
 	backup?: string;
+	once?: boolean;
 }>;
 
 function pathOption(flags: string, name: "config" | "backup"): Option {
@@ -383,12 +384,153 @@ async function runServer(config: ServerConfig): Promise<void> {
 	process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
+export async function runOneShot(config: ServerConfig): Promise<void> {
+	let state: ImportState | undefined;
+
+	try {
+		console.info("Initializing library state.");
+		const importState = await openImportState({
+			stateRoot: config.paths.stateRoot,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			versionRoot: config.paths.versionRoot,
+			onProgress: console.info,
+		});
+
+		state = importState;
+		importState.resetSourceObservationWindow();
+		await createDailyBackup(importState, config.paths.backupRoot);
+
+		console.info("Checking for interrupted publication operations.");
+		await recoverInterruptedOperations({
+			state: importState,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			stagingRoot: config.paths.stagingRoot,
+			versionRoot: config.paths.versionRoot,
+			versionRetentionHours: config.versionRetentionHours,
+		});
+
+		console.info(`Observing source library at ${config.paths.watchRoot}.`);
+		const initialObservation = await observeSource(config.paths.watchRoot);
+		if (!initialObservation.complete) {
+			const message =
+				initialObservation.issues[0] ??
+				"Initial one-shot source observation is incomplete";
+			importState.recordScanIssue(message);
+
+			throw new Error(message);
+		}
+
+		importState.observeSourceManifest({
+			watchRoot: config.paths.watchRoot,
+			manifestHash: initialObservation.manifestHash,
+			minimumAgeMs: config.sourceStabilitySeconds * 1_000,
+		});
+		console.info(
+			`Confirming the source snapshot in ${config.sourceStabilitySeconds} seconds.`,
+		);
+		await Bun.sleep(config.sourceStabilitySeconds * 1_000);
+
+		const confirmedObservation = await observeSource(
+			config.paths.watchRoot,
+		);
+		if (!confirmedObservation.complete) {
+			const message =
+				confirmedObservation.issues[0] ??
+				"One-shot source confirmation is incomplete";
+			importState.recordScanIssue(message);
+
+			throw new Error(message);
+		}
+
+		if (
+			confirmedObservation.manifestHash !==
+			initialObservation.manifestHash
+		) {
+			const message =
+				"Source changed during one-shot confirmation; no publication was attempted";
+			importState.recordScanIssue(message);
+
+			throw new Error(message);
+		}
+
+		const confirmation = importState.observeSourceManifest({
+			watchRoot: config.paths.watchRoot,
+			manifestHash: confirmedObservation.manifestHash,
+			minimumAgeMs: config.sourceStabilitySeconds * 1_000,
+		});
+		if (!confirmation.confirmed) {
+			throw new Error(
+				"One-shot source confirmation did not reach its age",
+			);
+		}
+
+		importState.clearScanIssue();
+		await unpublishUnavailableImports({
+			state: importState,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			stagingRoot: config.paths.stagingRoot,
+			versionRoot: config.paths.versionRoot,
+			incompleteSourceContainers:
+				confirmedObservation.incompleteSourceContainers,
+		});
+
+		const reconciliationStartedAt = performance.now();
+		const next = await preparePublication(
+			config.paths.watchRoot,
+			config.paths.generatedLibraryRoot,
+			confirmedObservation.discovery,
+		);
+		if (next.hasIssues) {
+			importState.recordScanIssue(
+				next.discoveryIssues[0] === undefined
+					? "Source preparation has unresolved candidate issues"
+					: `${next.discoveryIssues[0].path}: ${next.discoveryIssues[0].message}`,
+			);
+		}
+
+		console.info(
+			`Prepared ${next.plans.length} desired import(s); reconciling generated output.`,
+		);
+		await reconcileImports({
+			state: importState,
+			generatedLibraryRoot: config.paths.generatedLibraryRoot,
+			stagingRoot: config.paths.stagingRoot,
+			versionRoot: config.paths.versionRoot,
+			versionRetentionHours: config.versionRetentionHours,
+			watchRoot: config.paths.watchRoot,
+			inputs: next.plans,
+			complete: true,
+			incompleteSourceContainers: next.incompleteSourceContainers,
+			onProgress: console.info,
+		});
+		if (!next.hasIssues) {
+			importState.markManifestReconciled(
+				config.paths.watchRoot,
+				confirmedObservation.manifestHash,
+			);
+		}
+
+		console.info(
+			`One-shot reconciliation completed in ${prettyMilliseconds(
+				Math.max(
+					0,
+					Math.round(performance.now() - reconciliationStartedAt),
+				),
+				{ separateMilliseconds: true },
+			)}.`,
+		);
+	} finally {
+		state?.close();
+	}
+}
+
 export function createServerCommand(): Command {
 	return new Command()
 		.name("siftone")
 		.description("Manage and serve a Siftone music library")
 		.addOption(pathOption("--config <path>", "config"))
-		.addOption(pathOption("--backup <path>", "backup"));
+		.addOption(pathOption("--backup <path>", "backup"))
+		.option("--once", "Perform one stable reconciliation and exit");
 }
 
 async function main(): Promise<void> {
@@ -401,6 +543,10 @@ async function main(): Promise<void> {
 
 	console.info(`Loaded configuration from ${config.configPath}`);
 
+	if (options.backup !== undefined && options.once === true) {
+		throw new Error("--backup and --once cannot be used together");
+	}
+
 	if (options.backup !== undefined) {
 		await restoreBackup({
 			backupPath: options.backup,
@@ -410,6 +556,11 @@ async function main(): Promise<void> {
 		console.info(
 			"Restored verified SQLite library state. Start Siftone normally.",
 		);
+
+		return;
+	}
+	if (options.once === true) {
+		await runOneShot(config);
 
 		return;
 	}

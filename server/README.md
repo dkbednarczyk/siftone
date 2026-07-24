@@ -53,6 +53,20 @@ To restore a verified SQLite snapshot, pass its path with `--backup`:
 bun run --cwd server state:restore /path/to/imports.sqlite
 ```
 
+## One-shot build
+
+To scan a stable library once, reconcile it, and exit without opening the HTTP
+listener:
+
+```bash
+bun run --cwd server src/index.ts --config /path/to/config.toml --once
+```
+
+One-shot mode observes the complete source tree, waits
+`server.source_stability_seconds`, then observes it again. It publishes only if
+both complete snapshots match. If the source changes or either observation is
+incomplete, it exits without publication.
+
 ```toml
 [server]
 # Optional; defaults to 300 seconds. This is the full-scan cadence.
