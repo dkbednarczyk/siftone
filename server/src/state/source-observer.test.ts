@@ -15,11 +15,8 @@ describe("source observer", () => {
 			await writeFile(join(nested, "01.flac"), "replacement audio");
 			const second = await observeSource(root);
 
-			expect(first.containers[0].outcome).toBe("present");
-			expect(second.containers[0].outcome).toBe("present");
-			expect(second.containers[0].manifestHash).not.toBe(
-				first.containers[0].manifestHash,
-			);
+			expect(first.complete).toBe(true);
+			expect(second.complete).toBe(true);
 			expect(second.manifestHash).not.toBe(first.manifestHash);
 		} finally {
 			await rm(root, { recursive: true, force: true });
@@ -37,7 +34,7 @@ describe("source observer", () => {
 			const second = await observeSource(root);
 
 			expect(first.manifestHash).not.toBe(second.manifestHash);
-			expect(second.containers).toEqual([]);
+			expect(second.discovery.candidates).toEqual([]);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}

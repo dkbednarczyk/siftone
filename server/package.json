@@ -7,21 +7,17 @@
 		"dev": "bun --watch src/index.ts --config ./config.toml",
 		"start": "bun run src/index.ts --config ./config.toml",
 		"state:restore": "bun run src/index.ts --config ./config.toml --backup",
-		"musicbrainz:test": "bun run src/musicbrainz-test.ts",
 		"test": "bun test",
 		"check": "bun run check:biome && bun run check:shell",
 		"check:biome": "biome check .",
 		"check:shell": "shellcheck scripts/*.sh",
 		"typecheck": "tsc --project tsconfig.json",
-		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/siftone",
-		"build:musicbrainz-test": "bun build --compile --target=bun-linux-x64 src/musicbrainz-test.ts --outfile dist/musicbrainz-test"
+		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/siftone"
 	},
 	"dependencies": {
 		"commander": "^15.0.0",
 		"elysia": "^1.4.29",
 		"music-metadata": "^11.14.0",
-		"musicbrainz-api": "^1.2.1",
-		"p-retry": "^8.0.0",
 		"pretty-ms": "^9.3.0",
 		"zod": "^4.4.3"
 	},

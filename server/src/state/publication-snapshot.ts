@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, dirname, extname, join, relative } from "node:path";
-import type { PublicationInput } from "../publication/publish";
+import type { PublicationInput } from "../publication/plan";
 import {
 	canonicalAbsolutePath,
 	canonicalRelativePath,
 	isPathBelowRoot,
 	isPathWithinRoot,
 } from "../util/path";
-import { entryPath } from "./entry-path";
 import type { Desired, Entry } from "./reconcile/types";
 
 function audioOrArtwork(path: string): "audio" | "artwork" {
@@ -18,22 +17,12 @@ function audioOrArtwork(path: string): "audio" | "artwork" {
 }
 
 function manifestEntry(entry: Entry): readonly string[] {
-	if (entry.origin === "source") {
-		return [
-			entry.origin,
-			entry.relativeSourcePath,
-			entry.destinationName,
-			entry.size.toString(),
-			entry.mtimeNs.toString(),
-			entry.kind,
-		];
-	}
-
 	return [
 		entry.origin,
-		entry.cacheSha256,
-		entry.cacheRelativePath,
+		entry.relativeSourcePath,
 		entry.destinationName,
+		entry.size.toString(),
+		entry.mtimeNs.toString(),
 		entry.kind,
 	];
 }
@@ -111,23 +100,6 @@ export async function desiredFor(
 		});
 	}
 
-	if (input.automaticArtwork?.status === "selected") {
-		const cacheObject = input.automaticArtwork.cacheObject;
-		if (cacheObject === undefined) {
-			throw new Error(
-				"Selected automatic artwork is missing its cache object",
-			);
-		}
-
-		entries.push({
-			origin: "cache",
-			cacheSha256: cacheObject.sha256,
-			cacheRelativePath: cacheObject.relativePath,
-			destinationName: "cover.jpg",
-			kind: "artwork",
-		});
-	}
-
 	entries.sort((a, b) => a.destinationName.localeCompare(b.destinationName));
 
 	if (
@@ -151,7 +123,6 @@ export async function desiredFor(
 export async function entriesMatch(
 	destination: string,
 	entries: readonly Entry[],
-	cacheRoot: string,
 ): Promise<boolean> {
 	try {
 		const destinationStatus = await lstat(destination);
@@ -166,10 +137,7 @@ export async function entriesMatch(
 	}
 
 	const expected = new Map(
-		entries.map((entry) => [
-			entry.destinationName,
-			entryPath(entry, cacheRoot),
-		]),
+		entries.map((entry) => [entry.destinationName, entry.sourcePath]),
 	);
 
 	const output = await readdir(destination, { withFileTypes: true });

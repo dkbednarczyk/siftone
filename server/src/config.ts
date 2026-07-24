@@ -11,15 +11,10 @@ import {
 export type ServerPaths = Readonly<{
 	watchRoot: string;
 	generatedLibraryRoot: string;
-	cacheRoot: string;
 	stagingRoot: string;
 	versionRoot: string;
 	stateRoot: string;
 	backupRoot: string;
-}>;
-
-export type MusicBrainzConfig = Readonly<{
-	contact?: string;
 }>;
 
 export type ServerConfig = Readonly<{
@@ -28,7 +23,6 @@ export type ServerConfig = Readonly<{
 	reconciliationIntervalSeconds: number;
 	paths: ServerPaths;
 	versionRetentionHours: number;
-	musicBrainz: MusicBrainzConfig;
 }>;
 
 export type ConfigLoadOptions = Readonly<{
@@ -50,7 +44,6 @@ const TomlConfigSchema = z.strictObject({
 	paths: z.strictObject({
 		watch_root: z.string(),
 		generated_library_root: z.string(),
-		cache_root: z.string().optional(),
 		staging_root: z.string().optional(),
 		version_root: z.string().optional(),
 		state_root: z.string().optional(),
@@ -61,11 +54,6 @@ const TomlConfigSchema = z.strictObject({
 			version_retention_hours: z.number().positive().finite().optional(),
 		})
 		.optional(),
-	musicbrainz: z
-		.strictObject({
-			contact: z.string().optional(),
-		})
-		.optional(),
 });
 
 type TomlConfig = z.infer<typeof TomlConfigSchema>;
@@ -73,7 +61,6 @@ type TomlConfig = z.infer<typeof TomlConfigSchema>;
 type PathField =
 	| "watch_root"
 	| "generated_library_root"
-	| "cache_root"
 	| "staging_root"
 	| "version_root"
 	| "state_root"
@@ -188,10 +175,6 @@ async function parsePaths(
 			config.paths.generated_library_root,
 			"paths.generated_library_root",
 		),
-		cacheRoot: validateAbsolutePath(
-			config.paths.cache_root ?? join(dataRoot, "cache"),
-			"paths.cache_root",
-		),
 		stagingRoot: validateAbsolutePath(
 			config.paths.staging_root ??
 				join(
@@ -233,11 +216,6 @@ async function parsePaths(
 		"generated_library_root",
 	);
 
-	const cacheRoot = await createConfigDirectory(
-		configuredPaths.cacheRoot,
-		"cache_root",
-	);
-
 	if (generatedLibraryRoot === resolve(homeDirectory)) {
 		throw new Error(
 			"paths.generated_library_root must not be the home directory because .siftone is global state",
@@ -268,7 +246,6 @@ async function parsePaths(
 	const paths: ServerPaths = {
 		watchRoot,
 		generatedLibraryRoot,
-		cacheRoot,
 		stagingRoot,
 		versionRoot,
 		stateRoot,
@@ -328,8 +305,5 @@ export async function loadServerConfig(
 		),
 		versionRetentionHours:
 			result.data.publication?.version_retention_hours ?? 24,
-		musicBrainz: {
-			contact: result.data.musicbrainz?.contact,
-		},
 	};
 }

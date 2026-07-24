@@ -2,7 +2,7 @@ import { basename, dirname, extname, join, relative } from "node:path";
 import type { DiscoveredCandidate } from "../candidates/discover";
 import {
 	type CandidateDiscoveryIssue,
-	discoverCandidate,
+	type CandidateDiscoveryResult,
 	discoverCandidates,
 } from "../candidates/discover";
 import {
@@ -18,10 +18,10 @@ import {
 import { isDescendant } from "../util/path";
 import {
 	type PlannedSymlink,
+	type PublicationInput,
 	type PublicationPlanIssue,
 	planPublication,
 } from "./plan";
-import type { PublicationInput } from "./publish";
 
 export type PreparedCandidate =
 	| Readonly<{
@@ -375,8 +375,10 @@ function sourceContainerForIssue(
 export async function preparePublication(
 	watchRoot: string,
 	generatedLibraryRoot: string,
+	observedDiscovery?: CandidateDiscoveryResult,
 ): Promise<PreparedPublication> {
-	const discovery = await discoverCandidates(watchRoot);
+	const discovery =
+		observedDiscovery ?? (await discoverCandidates(watchRoot));
 	const candidates: PreparedCandidate[] = [];
 	const contenders: PublicationContender[] = [];
 	const incompleteContainers = new Set<string>();
@@ -468,42 +470,5 @@ export async function preparePublication(
 			compareText,
 		),
 		hasIssues,
-	};
-}
-
-/** Prepares one immediate watch-root container for incremental watcher work. */
-export async function prepareSourceContainer(
-	watchRoot: string,
-	generatedLibraryRoot: string,
-	container: string,
-): Promise<
-	Readonly<{ plans: readonly PublicationInput[]; incomplete: boolean }>
-> {
-	if (
-		container === "" ||
-		container.includes("/") ||
-		container.includes("\\")
-	) {
-		throw new Error(`Invalid source container: ${container}`);
-	}
-
-	const discovery = await discoverCandidate(join(watchRoot, container));
-	if (discovery.candidate === undefined) {
-		return { plans: [], incomplete: discovery.issues.length > 0 };
-	}
-
-	const prepared = await prepareContainer(
-		discovery.candidate,
-		generatedLibraryRoot,
-	);
-
-	const arbitration = arbitratePublicationContenders(prepared.contenders);
-
-	return {
-		plans: arbitration.plans,
-		incomplete:
-			discovery.issues.length > 0 ||
-			prepared.incomplete ||
-			arbitration.unresolved.length > 0,
 	};
 }

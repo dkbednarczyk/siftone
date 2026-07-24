@@ -1,4 +1,4 @@
-import type { PublicationInput } from "../../publication/publish";
+import type { PublicationInput } from "../../publication/plan";
 import type { ImportOperationPhase } from "../import-state";
 
 export type SourceEntry = Readonly<{
@@ -11,16 +11,7 @@ export type SourceEntry = Readonly<{
 	kind: "audio" | "artwork";
 }>;
 
-export type CacheEntry = Readonly<{
-	origin: "cache";
-	cacheSha256: string;
-	cacheRelativePath: string;
-	destinationName: string;
-	kind: "artwork";
-}>;
-
-/** A published entry is either an immutable source symlink or a managed cache object. */
-export type Entry = SourceEntry | CacheEntry;
+export type Entry = SourceEntry;
 
 export type Desired = {
 	input: PublicationInput;

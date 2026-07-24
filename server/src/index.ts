@@ -3,11 +3,6 @@ import { Command, Option } from "commander";
 import prettyMilliseconds from "pretty-ms";
 import { createApp } from "./app";
 import { loadServerConfig, type ServerConfig } from "./config";
-import {
-	AUTOMATIC_ARTWORK_RESOLVER_VERSION,
-	createAutomaticArtworkResolver,
-	resolvePublicationArtwork,
-} from "./musicbrainz/publication";
 import { preparePublication } from "./publication/prepare";
 import { createDailyBackup, restoreBackup } from "./state/backup";
 import {
@@ -49,16 +44,6 @@ function pathOption(flags: string, name: "config" | "backup"): Option {
 }
 
 async function runServer(config: ServerConfig): Promise<void> {
-	const automaticArtworkResolver = createAutomaticArtworkResolver({
-		contact: config.musicBrainz.contact,
-		appName: "siftone",
-		appVersion: "0.0.0",
-	});
-
-	const automaticArtworkEnabled =
-		typeof config.musicBrainz.contact === "string" &&
-		config.musicBrainz.contact.trim().length > 0;
-
 	let state: ImportState | undefined;
 	let watcher: ReconciliationScheduler | undefined;
 
@@ -94,10 +79,8 @@ async function runServer(config: ServerConfig): Promise<void> {
 			state: importState,
 			generatedLibraryRoot: config.paths.generatedLibraryRoot,
 			stagingRoot: config.paths.stagingRoot,
-			cacheRoot: config.paths.cacheRoot,
 			versionRoot: config.paths.versionRoot,
 			versionRetentionHours: config.versionRetentionHours,
-			onWarning: console.warn,
 		});
 
 		console.info(`Observing source library at ${config.paths.watchRoot}.`);
@@ -128,11 +111,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 			} else if (
 				startupManifest.confirmed &&
 				startupManifest.unchanged &&
-				!importState.isReconciliationRequired() &&
-				!importState.hasPendingAutomaticArtwork(
-					automaticArtworkEnabled,
-					AUTOMATIC_ARTWORK_RESOLVER_VERSION,
-				)
+				!importState.isReconciliationRequired()
 			) {
 				console.info(
 					"Source snapshot is unchanged; no reconciliation work is pending.",
@@ -196,13 +175,8 @@ async function runServer(config: ServerConfig): Promise<void> {
 					!startingFirstBuild &&
 					sourceManifest.unchanged &&
 					!importState.isReconciliationRequired() &&
-					!importState.hasPendingAutomaticArtwork(
-						automaticArtworkEnabled,
-						AUTOMATIC_ARTWORK_RESOLVER_VERSION,
-					) &&
 					!(await hasPublishedOutputDrift({
 						state: importState,
-						cacheRoot: config.paths.cacheRoot,
 						versionRoot: config.paths.versionRoot,
 					}))
 				) {
@@ -228,6 +202,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 				const next = await preparePublication(
 					config.paths.watchRoot,
 					config.paths.generatedLibraryRoot,
+					observation.discovery,
 				);
 
 				if (next.hasIssues) {
@@ -237,32 +212,17 @@ async function runServer(config: ServerConfig): Promise<void> {
 				}
 
 				console.info(
-					`Prepared ${next.plans.length} desired import(s); resolving artwork and reconciling generated output.`,
+					`Prepared ${next.plans.length} desired import(s); reconciling generated output.`,
 				);
-				const inputs = await resolvePublicationArtwork({
-					state: importState,
-					cacheRoot: config.paths.cacheRoot,
-					inputs: next.plans,
-					resolver: automaticArtworkResolver,
-					enabled: automaticArtworkEnabled,
-				});
-				for (const input of inputs) {
-					if (input.automaticArtwork !== undefined) {
-						console.info(
-							`Automatic artwork for ${input.albumArtist} — ${input.albumTitle}: ${input.automaticArtwork.status}`,
-						);
-					}
-				}
 
 				await reconcileImports({
 					state: importState,
 					generatedLibraryRoot: config.paths.generatedLibraryRoot,
 					stagingRoot: config.paths.stagingRoot,
-					cacheRoot: config.paths.cacheRoot,
 					versionRoot: config.paths.versionRoot,
 					versionRetentionHours: config.versionRetentionHours,
 					watchRoot: config.paths.watchRoot,
-					inputs,
+					inputs: next.plans,
 					complete: true,
 					incompleteSourceContainers: next.incompleteSourceContainers,
 					onProgress: console.info,
@@ -277,7 +237,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 							),
 						),
 						{ separateMilliseconds: true },
-					)} to reconcile ${inputs.length} desired import(s) from complete source scan.`,
+					)} to reconcile ${next.plans.length} desired import(s) from complete source scan.`,
 				);
 			},
 			onFailure: (error) =>
@@ -352,7 +312,7 @@ async function main(): Promise<void> {
 
 	if (options.backup !== undefined) {
 		await restoreBackup({
-			backupPath: config.paths.backupRoot,
+			backupPath: options.backup,
 			databasePath: resolve(config.paths.stateRoot, DATABASE_FILE),
 		});
 

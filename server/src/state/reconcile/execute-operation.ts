@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rename, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import { isStoredArtworkCacheObjectValid } from "../artwork-cache";
-import { entryPath } from "../entry-path";
 import type { ImportState } from "../import-state";
 import {
 	ensureDestinationParent,
@@ -16,55 +14,23 @@ import { immediate, nowNs } from "./database";
 import { operationEntries } from "./operation-entries";
 import type { Entry, OperationRow } from "./types";
 
-export class DamagedCacheObjectError extends Error {}
-
 type PriorVersion = Readonly<{
 	destination_path: string;
 	version_id: string;
 	version_path: string;
 }>;
 
-async function validateCacheEntries(
-	state: ImportState,
-	entries: readonly Entry[],
-	cacheRoot: string,
-): Promise<void> {
-	for (const entry of entries) {
-		if (entry.origin !== "cache") {
-			continue;
-		}
-
-		if (
-			!(await isStoredArtworkCacheObjectValid(
-				state,
-				cacheRoot,
-				entry.cacheSha256,
-			))
-		) {
-			throw new DamagedCacheObjectError(
-				`Cache object is missing or invalid: ${entry.cacheSha256}`,
-			);
-		}
-	}
-}
-
-async function stage(
-	entries: readonly Entry[],
-	path: string,
-	cacheRoot: string,
-): Promise<void> {
+async function stage(entries: readonly Entry[], path: string): Promise<void> {
 	await rm(path, { recursive: true, force: true });
 
 	for (const entry of entries) {
-		const path = entryPath(entry, cacheRoot);
-		const status = await lstat(path, { bigint: true });
+		const status = await lstat(entry.sourcePath, { bigint: true });
 		if (!status.isFile() || status.isSymbolicLink()) {
-			throw new Error(`Publication entry is not a real file: ${path}`);
+			throw new Error(
+				`Publication entry is not a real file: ${entry.sourcePath}`,
+			);
 		}
-		if (
-			entry.origin === "source" &&
-			(status.size !== entry.size || status.mtimeNs !== entry.mtimeNs)
-		) {
+		if (status.size !== entry.size || status.mtimeNs !== entry.mtimeNs) {
 			throw new Error(
 				`Source changed after operation planning: ${entry.sourcePath}`,
 			);
@@ -73,10 +39,7 @@ async function stage(
 
 	await mkdir(path, { recursive: true });
 	for (const entry of entries) {
-		await symlink(
-			entryPath(entry, cacheRoot),
-			join(path, entry.destinationName),
-		);
+		await symlink(entry.sourcePath, join(path, entry.destinationName));
 	}
 }
 
@@ -185,35 +148,16 @@ function finalizePublication(
 			[destinationId],
 		);
 		for (const entry of entries) {
-			if (entry.origin === "source") {
-				state.database.run(
-					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'source', ?, NULL, ?, ?, ?)",
-					[
-						destinationId,
-						entry.destinationName,
-						entry.sourcePath,
-						entry.size,
-						entry.mtimeNs,
-						entry.kind,
-					],
-				);
-			} else {
-				state.database.run(
-					"INSERT INTO destination_entries (destination_id, destination_name, origin, source_path, cache_sha256, size, mtime_ns, kind) VALUES (?, ?, 'cache', NULL, ?, NULL, NULL, 'artwork')",
-					[destinationId, entry.destinationName, entry.cacheSha256],
-				);
-			}
-		}
-
-		if (
-			entries.some(
-				(entry) =>
-					entry.origin === "source" && entry.kind === "artwork",
-			)
-		) {
 			state.database.run(
-				"DELETE FROM automatic_artwork WHERE source_release_id = ?",
-				[operation.source_release_id],
+				"INSERT INTO destination_entries (destination_id, destination_name, source_path, size, mtime_ns, kind) VALUES (?, ?, ?, ?, ?, ?)",
+				[
+					destinationId,
+					entry.destinationName,
+					entry.sourcePath,
+					entry.size,
+					entry.mtimeNs,
+					entry.kind,
+				],
 			);
 		}
 
@@ -222,7 +166,7 @@ function finalizePublication(
 			[manifestHash(entries), timestamp, operation.import_id],
 		);
 		state.database.run(
-			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ? AND origin = 'source')",
+			"DELETE FROM source_files WHERE source_release_id = ? AND source_path NOT IN (SELECT source_path FROM operation_entries WHERE operation_id = ?)",
 			[operation.source_release_id, operation.id],
 		);
 		if (prior !== null && prior.version_id !== operation.version_id) {
@@ -266,7 +210,6 @@ export async function executeOperation(
 	generatedLibraryRoot: string,
 	stagingRoot: string,
 	versionRoot: string,
-	cacheRoot: string,
 	operation: OperationRow,
 ): Promise<void> {
 	const entries = operationEntries(state, operation.id);
@@ -280,20 +223,6 @@ export async function executeOperation(
 		operation.id,
 	);
 	const prior = priorVersion(state, operation.import_id);
-
-	if (
-		operation.kind !== "delete" &&
-		!(
-			paths.version !== null &&
-			(await isOwnedPublicLeaf(
-				paths.destination,
-				paths.version,
-				versionRoot,
-			))
-		)
-	) {
-		await validateCacheEntries(state, entries, cacheRoot);
-	}
 
 	try {
 		if (operation.kind === "delete") {
@@ -341,7 +270,7 @@ export async function executeOperation(
 			throw new Error("Operation version record is invalid");
 		}
 		if (operation.phase === "planned") {
-			await stage(entries, paths.staging, cacheRoot);
+			await stage(entries, paths.staging);
 			updatePhase(state, operation.id, "staged");
 			operation.phase = "staged";
 		}
@@ -353,7 +282,7 @@ export async function executeOperation(
 					`Version and staging both exist: ${paths.version}`,
 				);
 			}
-			if (!(await entriesMatch(paths.version, entries, cacheRoot))) {
+			if (!(await entriesMatch(paths.version, entries))) {
 				throw new Error(
 					`Version does not match operation: ${paths.version}`,
 				);

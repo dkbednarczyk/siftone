@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AudioTagReader, AudioTags } from "../metadata/tags";
+import { observeSource } from "../state/source-observer";
 import {
 	arbitratePublicationContenders,
 	type PublicationContender,
 	preparePublication,
-	prepareSourceContainer,
 	splitTagGroups,
 } from "./prepare";
 
@@ -118,9 +118,12 @@ function contender(
 describe("publication preparation", () => {
 	test("prepares a real tagged album through discovery, validation, and planning", async () => {
 		const fixture = await preparedFixture();
+		const observation = await observeSource(fixture.watchRoot);
+		expect(observation.complete).toBe(true);
 		const result = await preparePublication(
 			fixture.watchRoot,
 			fixture.generatedRoot,
+			observation.discovery,
 		);
 
 		expect(result).toMatchObject({
@@ -144,23 +147,6 @@ describe("publication preparation", () => {
 				},
 			],
 		});
-		expect(
-			await prepareSourceContainer(
-				fixture.watchRoot,
-				fixture.generatedRoot,
-				"Album",
-			),
-		).toMatchObject({
-			incomplete: false,
-			plans: [{ root: fixture.albumRoot }],
-		});
-		await expect(
-			prepareSourceContainer(
-				fixture.watchRoot,
-				fixture.generatedRoot,
-				"../Album",
-			),
-		).rejects.toThrow("Invalid source container");
 	});
 
 	test("marks depth-pruned containers as incomplete", async () => {

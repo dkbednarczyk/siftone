@@ -1,13 +1,8 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { PublicationInput } from "../publication/publish";
-import {
-	canonicalAbsolutePath,
-	isMissingError,
-	isPathBelowRoot,
-} from "../util/path";
+import { join } from "node:path";
+import { isMissingError } from "../util/path";
 import { bigintRow } from "./reconcile/database";
 import { APPLICATION_ID, DATABASE_FILE, SCHEMA_SQL } from "./schema";
 
@@ -32,13 +27,6 @@ export type ImportState = Readonly<{
 	close(): void;
 	isDegraded(): boolean;
 	isReconciliationRequired(): boolean;
-	hasPendingAutomaticArtwork(
-		automaticArtworkEnabled: boolean,
-		resolverVersion: string,
-	): boolean;
-	assertKnownExistingDestinations(
-		inputs: readonly PublicationInput[],
-	): Promise<void>;
 	markReconciliationRequired(error?: string): void;
 	resetSourceObservationWindow(): void;
 	observeSourceManifest(
@@ -259,36 +247,6 @@ export async function openImportState({
 
 			return { confirmed, unchanged };
 		},
-		assertKnownExistingDestinations: async (inputs) => {
-			for (const input of inputs) {
-				const entry = input.entries[0];
-				if (entry === undefined) {
-					continue;
-				}
-
-				const destination = canonicalAbsolutePath(
-					dirname(entry.destinationPath),
-				);
-
-				if (!isPathBelowRoot(generatedLibraryRoot, destination)) {
-					throw new Error(
-						`Unsafe generated destination: ${destination}`,
-					);
-				}
-
-				const known = database
-					.query<{ id: string }, [string]>(
-						"SELECT id FROM published_destinations WHERE destination_path = ?",
-					)
-					.get(destination);
-
-				if (known === null && existsSync(destination)) {
-					throw new Error(
-						`Generated destination exists without SQLite ownership: ${destination}`,
-					);
-				}
-			}
-		},
 		isDegraded: () =>
 			database
 				.query<{ degraded: number }, []>(
@@ -301,18 +259,5 @@ export async function openImportState({
 					"SELECT required OR EXISTS(SELECT 1 FROM operations) OR EXISTS(SELECT 1 FROM reviews WHERE kind = 'attention_required') AS required FROM reconciliation_state WHERE id = 1",
 				)
 				.get()?.required === 1,
-		hasPendingAutomaticArtwork: (
-			automaticArtworkEnabled,
-			resolverVersion,
-		) =>
-			database
-				.query<{ pending: number }, [number, string, bigint]>(
-					"SELECT EXISTS(SELECT 1 FROM automatic_artwork WHERE (status = 'disabled' AND ?) OR resolver_version <> ? OR (status = 'transient_failure' AND next_attempt_at_ns IS NOT NULL AND next_attempt_at_ns <= ?) OR (status = 'selected' AND (cache_sha256 IS NULL OR NOT EXISTS(SELECT 1 FROM artwork_cache_objects WHERE sha256 = automatic_artwork.cache_sha256)))) AS pending",
-				)
-				.get(
-					automaticArtworkEnabled ? 1 : 0,
-					resolverVersion,
-					BigInt(Date.now()) * 1_000_000n,
-				)?.pending === 1,
 	};
 }

@@ -19,6 +19,15 @@ export type PlannedSymlink = Readonly<{
 	destinationPath: string;
 }>;
 
+/** A validated release and its complete generated-library symlink plan. */
+export type PublicationInput = Readonly<{
+	root: string;
+	logicalReleaseKey: string;
+	albumArtist: string;
+	albumTitle: string;
+	entries: readonly PlannedSymlink[];
+}>;
+
 export type PublicationPlanResult =
 	| Readonly<{ valid: true; entries: readonly PlannedSymlink[] }>
 	| Readonly<{ valid: false; issues: readonly PublicationPlanIssue[] }>;

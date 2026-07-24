@@ -64,64 +64,36 @@ reconciliation_interval_seconds = 300
 watch_root = "/srv/downloads"
 generated_library_root = "/srv/music"
 
-[musicbrainz]
-# Required to enable MusicBrainz artwork lookups.
-contact = "mailto:you@example.com"
 ```
 
 Only the source **watch root** and symlink destination **generated library
-root** are required. `musicbrainz.contact` is optional and is only checked as
-a string. Without it, MusicBrainz artwork lookup is disabled. `server.port` is
-optional and defaults to `3000`; when specified it must be an integer from `1`
-through `65535`. `server.reconciliation_interval_seconds` defaults to `300` and
-controls the periodic complete source snapshot cadence.
+root** are required. `server.port` is optional and defaults to `3000`; when
+specified it must be an integer from `1` through `65535`.
+`server.reconciliation_interval_seconds` defaults to `300` and controls the
+periodic complete source snapshot cadence.
 
 The configuration defaults to `config.toml` in the current working directory.
 Managed data defaults under `~/.siftone`:
 
 ```text
 config.toml                    configuration file
-~/.siftone/cache               artwork and image cache
 ~/.siftone/state               SQLite database and runtime state
 ~/.siftone/backups             SQLite backups
 ```
 
-Optional TOML overrides are available for `server.port`, `paths.cache_root`,
-`paths.state_root`, and `paths.backup_root`. `paths.staging_root` and
-`paths.version_root` may also be overridden; both default to hidden siblings of
-the generated library root and must share its filesystem. `[publication]`
-`version_retention_hours` defaults to 24. A Subsonic server must be able to
-resolve the sibling version root with its relative relationship to the library
-root.
+Optional TOML overrides are available for `server.port`, `paths.state_root`,
+and `paths.backup_root`. `paths.staging_root` and `paths.version_root` may also
+be overridden; both default to hidden siblings of the generated library root
+and must share its filesystem. `[publication]` `version_retention_hours`
+defaults to 24. A Subsonic server must be able to resolve the sibling version
+root with its relative relationship to the library root.
 
-To test the MusicBrainz client and its Cover Art Archive support, configure
-`musicbrainz.contact` and run:
-
-```bash
-bun run --cwd server musicbrainz:test \
-  --artist "Album Artist" \
-  --album "Album Title"
-```
-
-The compiled utility uses the same resolver as the import pipeline. It accepts
-only approved Cover Art Archive `Front` JPEG thumbnails, tries `1200` then
-`500` pixels, rejects images below 500 pixels or above 5 MiB, and writes the
-selected file below `paths.cache_root` at `musicbrainz-test/cover.jpg` by
-default. Pass a relative `--output` path ending in `.jpg` or `.jpeg`, or
-`--config /path/to/config.toml`, to override those defaults.
-
-Build the standalone prototype with:
-
-```bash
-bun run --cwd server build:musicbrainz-test
-```
-
-The TOML schema is strict: unknown top-level, `server`, `paths`, or
-`musicbrainz` keys, and values with the wrong type, prevent startup. Every
-configured path is non-empty and absolute. The source watch root must already
-exist and be a directory. Siftone resolves existing symlinks, creates the
-managed generated, cache, staging, state, and backup roots when absent, and
-rejects equal, parent/child, or otherwise overlapping roots.
+The TOML schema is strict: unknown top-level, `server`, or `paths` keys, and
+values with the wrong type, prevent startup. Every configured path is non-empty
+and absolute. The source watch root must already exist and be a directory.
+Siftone resolves existing symlinks, creates the managed generated, staging,
+state, and backup roots when absent, and rejects equal, parent/child, or
+otherwise overlapping roots.
 
 ## Current behavior
 
@@ -193,7 +165,7 @@ Siftone-managed real album directories require a rebuilt generated library and
 state database; Siftone never migrates them through a visible replacement gap.
 
 Sources are immutable: never write, edit, move, rename, delete, chmod/chown, or
-create markers in them. Only the server writes generated-library, cache, staging,
+create markers in them. Only the server writes generated-library, staging,
 state, and backup roots. SQLite-tracked generated albums are repaired from their
 recorded import state; unknown or unsafe generated-tree drift is preserved and
 reported for review.
@@ -215,27 +187,8 @@ reported for review.
 Qualifying JPEG/PNG sidecar artwork is ranked with `cover.{ext}` first, then
 conservative normalized album-name matches in the candidate root or a directory
 containing validated audio. It publishes the first unchanged as `cover.jpg` or
-`cover.png`; ignored alternatives are warnings. Local selected art always wins
-and removes any prior automatic-artwork mapping after the replacement is safely
-published.
-
-Artless, already-arbitrated winners may resolve automatic artwork through
-MusicBrainz and the Cover Art Archive immediately before publication. Set
-`musicbrainz.contact` to enable it; absent or blank contact configuration
-persists a nonblocking `disabled` outcome and makes no network requests. The
-daemon serializes Cover Art Archive requests, spaces top-level MusicBrainz
-requests by at least one second, and records terminal, transient, and selected
-outcomes. Transient failures retry during preparation, then publish without art
-with a backoff for a later scan.
-
-Automatic objects are JPEGs stored content-addressably below
-`paths.cache_root/artwork/sha256/<prefix>/<sha256>.jpg`. They are installed by
-atomic rename only after validation, referenced from SQLite publication and
-operation snapshots, and swept only when no automatic-artwork, active-operation,
-or published-destination reference remains. A missing, non-regular, wrong-size,
-or SHA-256-invalid object is treated as a cache miss: Siftone resolves again and
-repairs output on success, or publishes nonblockingly without automatic art on
-failure. CUE, M3U, and rip logs are never published or trusted as metadata.
+`cover.png`; ignored alternatives are warnings. CUE, M3U, and rip logs are never
+published or trusted as metadata.
 
 ## State and recovery
 

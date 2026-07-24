@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServerCommand, type ServerCommandOptions } from "./index";
+import { createDailyBackup } from "./state/backup";
 import { DATABASE_FILE, openImportState } from "./state/import-state";
 
 function parseArguments(argv: string[]): ServerCommandOptions {
@@ -86,6 +87,54 @@ describe("server command", () => {
 		});
 	});
 
+	test("restores the snapshot supplied by the backup option", async () => {
+		const root = await mkdtemp(join(tmpdir(), "siftone-restore-"));
+		const watchRoot = join(root, "watch");
+		const generatedLibraryRoot = join(root, "generated");
+		const stagingRoot = join(root, "staging");
+		const stateRoot = join(root, "state");
+		const backupRoot = join(root, "backups");
+		const configPath = join(root, "config.toml");
+
+		try {
+			await Promise.all([
+				mkdir(watchRoot),
+				mkdir(generatedLibraryRoot),
+				mkdir(stateRoot),
+			]);
+			const state = await openImportState({
+				stateRoot,
+				generatedLibraryRoot,
+			});
+			const backupPath = await createDailyBackup(state, backupRoot);
+			state.close();
+
+			if (backupPath === undefined) {
+				throw new Error("Expected a new backup snapshot");
+			}
+
+			await writeFile(
+				configPath,
+				`[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+			);
+			const child = Bun.spawn(
+				[
+					process.execPath,
+					join(import.meta.dir, "index.ts"),
+					"--config",
+					configPath,
+					"--backup",
+					backupPath,
+				],
+				{ stderr: "pipe", stdout: "pipe" },
+			);
+
+			expect(await child.exited).toBe(0);
+		} finally {
+			await rm(root, { force: true, recursive: true });
+		}
+	});
+
 	test("rejects invalid, duplicate, conflicting, and unknown options", () => {
 		expect(() => parseArguments(["--config"])).toThrow(
 			"option '--config <path>' argument missing",
@@ -103,7 +152,6 @@ describe("server command", () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-startup-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
-		const cacheRoot = join(root, "cache");
 		const stagingRoot = join(root, "staging");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
@@ -123,7 +171,7 @@ describe("server command", () => {
 		try {
 			await writeFile(
 				configPath,
-				`[server]\nport = ${port}\nreconciliation_interval_seconds = 300\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\ncache_root = ${JSON.stringify(cacheRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+				`[server]\nport = ${port}\nreconciliation_interval_seconds = 300\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
 			);
 
 			child = Bun.spawn(
@@ -157,7 +205,6 @@ describe("server command", () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-startup-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
-		const cacheRoot = join(root, "cache");
 		const stagingRoot = join(root, "staging");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
@@ -189,7 +236,7 @@ describe("server command", () => {
 		try {
 			await writeFile(
 				configPath,
-				`[server]\nport = ${port}\nreconciliation_interval_seconds = 300\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\ncache_root = ${JSON.stringify(cacheRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+				`[server]\nport = ${port}\nreconciliation_interval_seconds = 300\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
 			);
 
 			child = Bun.spawn(
@@ -223,7 +270,6 @@ describe("server command", () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-startup-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
-		const cacheRoot = join(root, "cache");
 		const stagingRoot = join(root, "staging");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
@@ -243,7 +289,7 @@ describe("server command", () => {
 		try {
 			await writeFile(
 				configPath,
-				`[server]\nport = ${port}\nreconciliation_interval_seconds = 1\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\ncache_root = ${JSON.stringify(cacheRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+				`[server]\nport = ${port}\nreconciliation_interval_seconds = 1\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
 			);
 
 			child = Bun.spawn(
@@ -278,7 +324,6 @@ describe("server command", () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-startup-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
-		const cacheRoot = join(root, "cache");
 		const stagingRoot = join(root, "staging");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
@@ -295,7 +340,7 @@ describe("server command", () => {
 		try {
 			await writeFile(
 				configPath,
-				`[server]\nport = ${listener.port}\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\ncache_root = ${JSON.stringify(cacheRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
+				`[server]\nport = ${listener.port}\n\n[paths]\nwatch_root = ${JSON.stringify(watchRoot)}\ngenerated_library_root = ${JSON.stringify(generatedLibraryRoot)}\nstaging_root = ${JSON.stringify(stagingRoot)}\nstate_root = ${JSON.stringify(stateRoot)}\nbackup_root = ${JSON.stringify(backupRoot)}\n`,
 			);
 
 			child = Bun.spawn(
