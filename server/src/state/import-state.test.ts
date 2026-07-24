@@ -9,6 +9,7 @@ describe("import state", () => {
 		const root = await mkdtemp(join(tmpdir(), "siftone-import-state-"));
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
+		const versionRoot = join(root, "versions");
 		const stateRoot = join(root, "state");
 		const manifestHash = "a".repeat(64);
 
@@ -16,11 +17,13 @@ describe("import state", () => {
 			await Promise.all([
 				mkdir(watchRoot),
 				mkdir(generatedLibraryRoot),
+				mkdir(versionRoot),
 				mkdir(stateRoot),
 			]);
 			const state = await openImportState({
 				stateRoot,
 				generatedLibraryRoot,
+				versionRoot,
 			});
 			try {
 				expect(

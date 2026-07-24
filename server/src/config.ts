@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import {
 	createAndResolveDirectory,
@@ -16,6 +17,15 @@ export type ServerPaths = Readonly<{
 	stateRoot: string;
 	backupRoot: string;
 }>;
+
+type ConfiguredPaths = {
+	watchRoot: string;
+	generatedLibraryRoot: string;
+	stagingRoot?: string;
+	versionRoot?: string;
+	stateRoot: string;
+	backupRoot: string;
+};
 
 export type ServerConfig = Readonly<{
 	configPath: string;
@@ -100,41 +110,7 @@ async function createConfigDirectory(
 	}
 }
 
-const internalGeneratedDirectoryNames: Partial<
-	Record<keyof ServerPaths, string>
-> = {
-	stagingRoot: "staging",
-	versionRoot: "versions",
-};
-
-function isAllowedGeneratedChild(
-	parentName: keyof ServerPaths,
-	parentPath: string,
-	childName: keyof ServerPaths,
-	childPath: string,
-): boolean {
-	const directoryName = internalGeneratedDirectoryNames[childName];
-
-	return (
-		parentName === "generatedLibraryRoot" &&
-		directoryName !== undefined &&
-		childPath === join(parentPath, ".siftone", directoryName)
-	);
-}
-
-function isAllowedInternalOverlap(
-	firstName: keyof ServerPaths,
-	firstPath: string,
-	secondName: keyof ServerPaths,
-	secondPath: string,
-): boolean {
-	return (
-		isAllowedGeneratedChild(firstName, firstPath, secondName, secondPath) ||
-		isAllowedGeneratedChild(secondName, secondPath, firstName, firstPath)
-	);
-}
-
-function validateNoOverlaps(paths: ServerPaths): void {
+function validateNoOverlaps(paths: Partial<ServerPaths>): void {
 	const entries = Object.entries(paths) as [keyof ServerPaths, string][];
 
 	for (let first = 0; first < entries.length; first += 1) {
@@ -146,15 +122,7 @@ function validateNoOverlaps(paths: ServerPaths): void {
 				isSameOrDescendant(firstPath, secondPath) ||
 				isSameOrDescendant(secondPath, firstPath);
 
-			if (
-				!isAllowedInternalOverlap(
-					firstName,
-					firstPath,
-					secondName,
-					secondPath,
-				) &&
-				pathsOverlap
-			) {
+			if (pathsOverlap) {
 				throw new Error(
 					`paths.${firstName} and paths.${secondName} must not overlap`,
 				);
@@ -163,13 +131,24 @@ function validateNoOverlaps(paths: ServerPaths): void {
 	}
 }
 
+function operationDataRoot(
+	dataRoot: string,
+	generatedLibraryRoot: string,
+): string {
+	const libraryId = createHash("sha256")
+		.update(generatedLibraryRoot)
+		.digest("hex");
+
+	return join(dataRoot, "libraries", libraryId);
+}
+
 async function parsePaths(
 	config: TomlConfig,
 	homeDirectory: string,
 ): Promise<ServerPaths> {
 	const dataRoot = join(homeDirectory, ".siftone");
 
-	const configuredPaths: ServerPaths = {
+	const configuredPaths: ConfiguredPaths = {
 		watchRoot: validateAbsolutePath(
 			config.paths.watch_root,
 			"paths.watch_root",
@@ -177,24 +156,6 @@ async function parsePaths(
 		generatedLibraryRoot: validateAbsolutePath(
 			config.paths.generated_library_root,
 			"paths.generated_library_root",
-		),
-		stagingRoot: validateAbsolutePath(
-			config.paths.staging_root ??
-				join(
-					config.paths.generated_library_root,
-					".siftone",
-					"staging",
-				),
-			"paths.staging_root",
-		),
-		versionRoot: validateAbsolutePath(
-			config.paths.version_root ??
-				join(
-					config.paths.generated_library_root,
-					".siftone",
-					"versions",
-				),
-			"paths.version_root",
 		),
 		stateRoot: validateAbsolutePath(
 			config.paths.state_root ?? join(dataRoot, "state"),
@@ -205,6 +166,18 @@ async function parsePaths(
 			"paths.backup_root",
 		),
 	};
+	if (config.paths.staging_root !== undefined) {
+		configuredPaths.stagingRoot = validateAbsolutePath(
+			config.paths.staging_root,
+			"paths.staging_root",
+		);
+	}
+	if (config.paths.version_root !== undefined) {
+		configuredPaths.versionRoot = validateAbsolutePath(
+			config.paths.version_root,
+			"paths.version_root",
+		);
+	}
 
 	validateNoOverlaps(configuredPaths);
 
@@ -225,14 +198,29 @@ async function parsePaths(
 		);
 	}
 
+	const defaultOperationRoot = operationDataRoot(
+		dataRoot,
+		generatedLibraryRoot,
+	);
 	const stagingRoot = await createConfigDirectory(
-		config.paths.staging_root ??
-			join(generatedLibraryRoot, ".siftone", "staging"),
+		configuredPaths.stagingRoot ??
+			join(
+				configuredPaths.versionRoot === undefined
+					? defaultOperationRoot
+					: dirname(configuredPaths.versionRoot),
+				"staging",
+			),
 		"staging_root",
 	);
 
 	const versionRoot = await createConfigDirectory(
-		configuredPaths.versionRoot,
+		configuredPaths.versionRoot ??
+			join(
+				configuredPaths.stagingRoot === undefined
+					? defaultOperationRoot
+					: dirname(configuredPaths.stagingRoot),
+				"versions",
+			),
 		"version_root",
 	);
 

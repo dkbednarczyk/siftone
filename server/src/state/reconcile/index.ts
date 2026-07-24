@@ -32,13 +32,13 @@ export async function recoverInterruptedOperations({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
-	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRoot,
 	versionRetentionHours = 24,
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
-	versionRoot?: string;
+	versionRoot: string;
 	versionRetentionHours?: number;
 }>): Promise<void> {
 	await mkdir(versionRoot, { recursive: true });
@@ -139,13 +139,13 @@ export async function unpublishUnavailableImports({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
-	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRoot,
 	incompleteSourceContainers = [],
 }: Readonly<{
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
-	versionRoot?: string;
+	versionRoot: string;
 	incompleteSourceContainers?: readonly string[];
 }>): Promise<void> {
 	await mkdir(versionRoot, { recursive: true });
@@ -211,7 +211,7 @@ export async function reconcileImports({
 	state,
 	generatedLibraryRoot,
 	stagingRoot,
-	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRoot,
 	versionRetentionHours = 24,
 	watchRoot,
 	inputs,
@@ -222,7 +222,7 @@ export async function reconcileImports({
 	state: ImportState;
 	generatedLibraryRoot: string;
 	stagingRoot: string;
-	versionRoot?: string;
+	versionRoot: string;
 	versionRetentionHours?: number;
 	watchRoot: string;
 	inputs: readonly PublicationInput[];

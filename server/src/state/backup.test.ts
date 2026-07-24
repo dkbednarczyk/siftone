@@ -13,9 +13,10 @@ async function fixture() {
 	directories.push(root);
 	const stateRoot = join(root, "state");
 	const generated = join(root, "generated");
+	const versionRoot = join(root, "versions");
 	const backupRoot = join(root, "backups");
 	await Promise.all([mkdir(stateRoot), mkdir(generated), mkdir(backupRoot)]);
-	return { stateRoot, generated, backupRoot };
+	return { stateRoot, generated, versionRoot, backupRoot };
 }
 
 afterEach(async () => {
@@ -34,6 +35,7 @@ describe("SQLite library-state backups", () => {
 		const state = await openImportState({
 			stateRoot: paths.stateRoot,
 			generatedLibraryRoot: paths.generated,
+			versionRoot: paths.versionRoot,
 		});
 		for (let day = 0; day < 8; day += 1) {
 			await createDailyBackup(
@@ -59,6 +61,7 @@ describe("SQLite library-state backups", () => {
 		const state = await openImportState({
 			stateRoot: paths.stateRoot,
 			generatedLibraryRoot: paths.generated,
+			versionRoot: paths.versionRoot,
 		});
 		state.database.run(
 			"INSERT INTO source_containers (id, root_path) VALUES (?, '/watch/Album')",

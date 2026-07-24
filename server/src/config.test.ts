@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	lstat,
 	mkdir,
@@ -57,6 +58,14 @@ function loadExplicitConfig(configPath: string) {
 	});
 }
 
+function defaultOperationRoot(generatedLibraryRoot: string): string {
+	const libraryId = createHash("sha256")
+		.update(generatedLibraryRoot)
+		.digest("hex");
+
+	return join(defaultHomeDirectory, ".siftone", "libraries", libraryId);
+}
+
 beforeEach(async () => {
 	await mkdir(defaultWatchRoot, { recursive: true });
 });
@@ -86,7 +95,16 @@ describe("server configuration", () => {
 			port: 3000,
 			paths: {
 				stagingRoot: await realpath(
-					join(defaultRootParent, "generated", ".siftone", "staging"),
+					join(
+						defaultOperationRoot(defaultGeneratedLibraryRoot),
+						"staging",
+					),
+				),
+				versionRoot: await realpath(
+					join(
+						defaultOperationRoot(defaultGeneratedLibraryRoot),
+						"versions",
+					),
 				),
 				stateRoot: await realpath(
 					join(defaultHomeDirectory, ".siftone", "state"),
@@ -96,17 +114,22 @@ describe("server configuration", () => {
 				),
 			},
 		});
+		await expect(
+			lstat(join(defaultGeneratedLibraryRoot, ".siftone")),
+		).rejects.toThrow("ENOENT");
 	});
 
 	test("allows explicit managed storage overrides", async () => {
 		const directory = await makeTemporaryDirectory();
 		const stagingRoot = join(directory, "staging");
+		const versionRoot = join(directory, "versions");
 		const stateRoot = join(directory, "state");
 		const backupRoot = join(directory, "backups");
 		const configPath = await writeConfig(
 			directory,
 			tomlPaths({
 				staging_root: stagingRoot,
+				version_root: versionRoot,
 				state_root: stateRoot,
 				backup_root: backupRoot,
 			}),
@@ -116,6 +139,7 @@ describe("server configuration", () => {
 		expect(config).toMatchObject({
 			paths: {
 				stagingRoot: await realpath(stagingRoot),
+				versionRoot: await realpath(versionRoot),
 				stateRoot: await realpath(stateRoot),
 				backupRoot: await realpath(backupRoot),
 			},
@@ -266,6 +290,20 @@ describe("server configuration", () => {
 		await expect(lstat(join(defaultWatchRoot, "library"))).rejects.toThrow(
 			"ENOENT",
 		);
+
+		const operationRootPath = await writeConfig(
+			directory,
+			tomlPaths({
+				staging_root: join(
+					defaultGeneratedLibraryRoot,
+					".siftone",
+					"staging",
+				),
+			}),
+		);
+		await expect(loadExplicitConfig(operationRootPath)).rejects.toThrow(
+			"must not overlap",
+		);
 	});
 
 	test("allows non-overlapping roots with common path prefixes", async () => {
@@ -374,7 +412,16 @@ describe("server configuration", () => {
 					join(generatedTarget, "library"),
 				),
 				stagingRoot: await realpath(
-					join(generatedTarget, "library", ".siftone", "staging"),
+					join(
+						defaultOperationRoot(join(generatedTarget, "library")),
+						"staging",
+					),
+				),
+				versionRoot: await realpath(
+					join(
+						defaultOperationRoot(join(generatedTarget, "library")),
+						"versions",
+					),
 				),
 				stateRoot: await realpath(
 					join(defaultHomeDirectory, ".siftone", "state"),

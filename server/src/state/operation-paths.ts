@@ -32,16 +32,13 @@ export async function ensurePublicationRoots(
 		}
 	}
 
-	const [generated, staging, versions] = await Promise.all([
-		stat(generatedLibraryRoot),
+	const [staging, versions] = await Promise.all([
 		stat(stagingRoot),
 		stat(versionRoot),
 	]);
 
-	if (generated.dev !== staging.dev || generated.dev !== versions.dev) {
-		throw new Error(
-			"Staging, version, and generated roots must share a filesystem",
-		);
+	if (staging.dev !== versions.dev) {
+		throw new Error("Staging and version roots must share a filesystem");
 	}
 }
 

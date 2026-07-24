@@ -132,6 +132,7 @@ describe("server command", () => {
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
 		const stagingRoot = join(root, "staging");
+		const versionRoot = join(root, "versions");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
 		const configPath = join(root, "config.toml");
@@ -145,6 +146,7 @@ describe("server command", () => {
 			const state = await openImportState({
 				stateRoot,
 				generatedLibraryRoot,
+				versionRoot,
 			});
 			const backupPath = await createDailyBackup(state, backupRoot);
 			state.close();
@@ -246,6 +248,7 @@ describe("server command", () => {
 		const watchRoot = join(root, "watch");
 		const generatedLibraryRoot = join(root, "generated");
 		const stagingRoot = join(root, "staging");
+		const versionRoot = join(root, "versions");
 		const stateRoot = join(root, "state");
 		const backupRoot = join(root, "backups");
 		await Promise.all([
@@ -256,6 +259,7 @@ describe("server command", () => {
 		const state = await openImportState({
 			stateRoot,
 			generatedLibraryRoot,
+			versionRoot,
 		});
 		state.database.run(
 			"UPDATE reconciliation_state SET last_reconciled_manifest_hash = '0000000000000000000000000000000000000000000000000000000000000000', last_full_scan_at_ns = 1 WHERE id = 1",

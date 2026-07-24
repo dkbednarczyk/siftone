@@ -58,9 +58,9 @@ remains a direct SQLite diagnostic when an exact count is useful.
 
 2. Start Siftone. Its boot publication pass validates every source candidate,
    rejects any invalid or unmanaged generated entry, stages complete album
-directories in `.siftone-staging`, moves each immutable album version into
-`.siftone-versions`, and atomically swaps each public album-leaf symlink into
-`/home/damian/Music`.
+    directories under `~/.siftone/libraries`, moves each immutable album version
+    into managed storage, and atomically swaps each public album-leaf symlink into
+    `/home/damian/Music`.
 
    ```bash
    bun run --cwd server start
@@ -106,9 +106,9 @@ server/scripts/gonic-test.sh verify
   against external concurrent mutation.
 - Each replacement at an unchanged public album leaf swaps one symlink atomically;
   an entire multi-album boot pass is **not** batch-atomic. Immutable versions and
-  staging live below the generated root at `.siftone/versions` and
-  `.siftone/staging`, so the server must permit resolution of hidden directories.
-  Metadata path changes are delete/add, not gapless. If a later album
+  staging live under `~/.siftone/libraries`, outside the generated root, so Gonic
+  must permit public album symlinks to resolve outside its music root. Metadata
+  path changes are delete/add, not gapless. If a later album
   fails, earlier exact albums remain published, staging is cleaned, and a rerun
   resumes the remaining plans once the failure is resolved. A failed commit may
   leave an empty expected artist directory, which is safe for a rerun.

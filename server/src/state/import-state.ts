@@ -169,12 +169,12 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
 export async function openImportState({
 	stateRoot,
 	generatedLibraryRoot,
-	versionRoot = join(generatedLibraryRoot, ".siftone", "versions"),
+	versionRoot,
 	onProgress,
 }: Readonly<{
 	stateRoot: string;
 	generatedLibraryRoot: string;
-	versionRoot?: string;
+	versionRoot: string;
 	onProgress?: (message: string) => void;
 }>): Promise<ImportState> {
 	const databasePath = join(stateRoot, DATABASE_FILE);

@@ -100,10 +100,14 @@ config.toml                    configuration file
 
 Optional TOML overrides are available for `server.port`, `paths.state_root`,
 and `paths.backup_root`. `paths.staging_root` and `paths.version_root` may also
-be overridden; both default to hidden siblings of the generated library root
-and must share its filesystem. `[publication]` `version_retention_hours`
-defaults to 24. A Subsonic server must be able to resolve the sibling version
-root with its relative relationship to the library root.
+be overridden; they default to
+`~/.siftone/libraries/{sha256-generated-library-root}/{staging,versions}`.
+They must share a filesystem so a staged album can be atomically renamed into
+its immutable version. If only one operation root is overridden, the other
+defaults to a sibling under the override's parent. `[publication]`
+`version_retention_hours` defaults to 24. A Subsonic server must be able to
+resolve public album symlinks whose version targets are outside the generated
+library root.
 
 The TOML schema is strict: unknown top-level, `server`, or `paths` keys, and
 values with the wrong type, prevent startup. Every configured path is non-empty
@@ -175,10 +179,11 @@ when an equivalent pure-FLAC contender exists.
 Each generated album version contains only audio symlinks and an optional
 local-artwork symlink, named `cover.jpg` or `cover.png`. The public
 `Artist/Album` leaf is an owned relative symlink to that immutable version.
-Imports stage and version on the same filesystem, then publish replacements by
-an atomic symlink rename; old versions remain for the configured retention
-window. Siftone never overwrites, adopts, tracks, or deletes unmanaged entries
-in a forced non-empty root. This is a breaking layout change: existing
+Imports stage and version on the same filesystem outside the generated library,
+then publish replacements by an atomic symlink rename; old versions remain for
+the configured retention window. Siftone never overwrites, adopts, tracks, or
+deletes unmanaged entries in a forced non-empty root. This is a breaking layout
+change: existing
 Siftone-managed real album directories require a rebuilt generated library and
 state database; Siftone never migrates them through a visible replacement gap.
 
