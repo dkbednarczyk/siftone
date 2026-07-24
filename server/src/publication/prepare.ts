@@ -376,12 +376,17 @@ export async function preparePublication(
 	watchRoot: string,
 	generatedLibraryRoot: string,
 	observedDiscovery?: CandidateDiscoveryResult,
+	onProgress?: (message: string) => void,
 ): Promise<PreparedPublication> {
 	const discovery =
 		observedDiscovery ?? (await discoverCandidates(watchRoot));
 	const candidates: PreparedCandidate[] = [];
 	const contenders: PublicationContender[] = [];
 	const incompleteContainers = new Set<string>();
+
+	onProgress?.(
+		`Preparing ${discovery.candidates.length} source container(s) for publication.`,
+	);
 
 	for (const issue of discovery.issues) {
 		const container = sourceContainerForIssue(watchRoot, issue.path);
@@ -393,10 +398,17 @@ export async function preparePublication(
 
 	const preparedContainers: PreparedContainer[] = [];
 
-	for (const container of discovery.candidates) {
+	for (const [index, container] of discovery.candidates.entries()) {
 		preparedContainers.push(
 			await prepareContainer(container, generatedLibraryRoot),
 		);
+
+		const completed = index + 1;
+		if (completed % 25 === 0 || completed === discovery.candidates.length) {
+			onProgress?.(
+				`Prepared ${completed} of ${discovery.candidates.length} source container(s).`,
+			);
+		}
 	}
 
 	for (const [index, prepared] of preparedContainers.entries()) {
@@ -461,6 +473,16 @@ export async function preparePublication(
 		finalCandidates.some((candidate) =>
 			["invalid", "unplannable"].includes(candidate.status),
 		);
+	const invalidOrUnplannable = finalCandidates.filter((candidate) =>
+		["invalid", "unplannable"].includes(candidate.status),
+	).length;
+	const suppressedCount = finalCandidates.filter(
+		(candidate) => candidate.status === "suppressed",
+	).length;
+
+	onProgress?.(
+		`Publication preparation complete: ${arbitration.plans.length} planned release(s), ${invalidOrUnplannable} invalid or unplannable release(s), ${suppressedCount} FLAC-preferred release(s), ${discovery.issues.length} discovery issue(s).`,
+	);
 
 	return {
 		discoveryIssues: discovery.issues,

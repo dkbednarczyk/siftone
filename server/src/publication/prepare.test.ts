@@ -119,11 +119,13 @@ describe("publication preparation", () => {
 	test("prepares a real tagged album through discovery, validation, and planning", async () => {
 		const fixture = await preparedFixture();
 		const observation = await observeSource(fixture.watchRoot);
+		const progress: string[] = [];
 		expect(observation.complete).toBe(true);
 		const result = await preparePublication(
 			fixture.watchRoot,
 			fixture.generatedRoot,
 			observation.discovery,
+			(message) => progress.push(message),
 		);
 
 		expect(result).toMatchObject({
@@ -147,6 +149,11 @@ describe("publication preparation", () => {
 				},
 			],
 		});
+		expect(progress).toEqual([
+			"Preparing 1 source container(s) for publication.",
+			"Prepared 1 of 1 source container(s).",
+			"Publication preparation complete: 1 planned release(s), 0 invalid or unplannable release(s), 0 FLAC-preferred release(s), 0 discovery issue(s).",
+		]);
 	});
 
 	test("marks depth-pruned containers as incomplete", async () => {

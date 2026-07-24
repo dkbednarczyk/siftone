@@ -282,6 +282,7 @@ async function runServer(config: ServerConfig): Promise<void> {
 					config.paths.watchRoot,
 					config.paths.generatedLibraryRoot,
 					observation.discovery,
+					console.info,
 				);
 
 				if (next.hasIssues) {
@@ -479,6 +480,7 @@ export async function runOneShot(config: ServerConfig): Promise<void> {
 			config.paths.watchRoot,
 			config.paths.generatedLibraryRoot,
 			confirmedObservation.discovery,
+			console.info,
 		);
 		if (next.hasIssues) {
 			importState.recordScanIssue(
